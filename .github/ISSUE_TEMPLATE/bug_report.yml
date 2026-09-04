@@ -1,0 +1,138 @@
+# A form rather than a free-text template, because a failure here can originate
+# in any of four independently-installed layers (q + licence, pykx, qlint,
+# vLLM + GPU + checkpoint) and the layer is almost never stated unprompted.
+# Every required field below exists to remove one round-trip; nothing is asked
+# that the answer would not change.
+name: Bug report
+description: Something in the MCP server, the gates, or the skill behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Before filing: `passed=true` means **"ran without raising, and
+        independent samples agreed"**, not "matches the intended semantics".
+        A draft that parses, lints, runs and wins its cluster while still being
+        semantically wrong is documented behaviour — see "Design stance" in
+        `mcp_server/README.md`. Please file that as a Feature request describing
+        the gate you think is missing, not as a bug.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected instead
+      description: >-
+        Include the exact error or the wrong output. If the server returned a
+        response, paste it whole — `passed`, `lint_gate`, `final_issues` and
+        `rounds_used` together usually identify the layer immediately.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: >-
+        The `generate_qsql` arguments, or the command line. `table_schemas` is
+        required by the tool, so please include the schemas you passed — a
+        report without them cannot be reproduced.
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: role
+    attributes:
+      label: Are you running the server, or calling one your organisation runs?
+      description: >-
+        This decides which of the fields below we need. There is no public
+        endpoint, so "client only" means a server someone in your own
+        organisation is hosting.
+      options:
+        - I am self-hosting the MCP server
+        - I call a server my organisation hosts (client only)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Which layer do you believe is involved?
+      description: A guess is fine, and "not sure" is a useful answer.
+      options:
+        - Not sure
+        - The MCP server / self-consistency pipeline
+        - Gate 1 — q parse
+        - Gate 2 — KX qlint C9
+        - Gate 3 — runtime execution against the dummy table
+        - The model / vLLM serving
+        - The /qsql-coder skill
+        - Docs (README, SELF_HOSTING.md, CLAUDE.md)
+    validations:
+      required: true
+
+  - type: input
+    id: q_version
+    attributes:
+      label: q / kdb+ version
+      description: The output of `q --version`.
+      placeholder: "4.1 2024.xx.xx"
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: Python, pykx and vLLM versions
+      description: >-
+        Self-hosters: all three. Client-only: your Python version is enough.
+        pykx and vLLM are not declared in `pyproject.toml` (licensed and
+        CUDA-specific respectively), so we cannot infer them.
+      placeholder: "python 3.12.x, pykx 3.x.x, vllm 0.27.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: lint_gate
+    attributes:
+      label: What does the response's `lint_gate` field say?
+      description: >-
+        `disabled` explains a whole class of "why was this not caught" reports
+        on its own — the C9 gate degrades to off when `QLINT_DIR` yields no
+        loadable `qlint.q_`, unless `MCP_QSQL_QLINT=required`.
+      options:
+        - kx_qlint_c9
+        - disabled
+        - Not applicable / no response was returned
+        - I do not know
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Server environment (self-hosters only)
+      description: >-
+        Any `MCP_QSQL_*` / `VLLM_*` variables you set, whether `QLINT_DIR` is
+        set, the GPU, and the launch flags you passed to `vllm serve`. Redact
+        paths freely — we need the shape, not your directory names.
+      render: shell
+
+  - type: input
+    id: checkpoint
+    attributes:
+      label: Which checkpoint are you serving? (self-hosters only)
+      description: >-
+        Note whether it is the **unwrapped** variant. The wrapped one has
+        multimodal-prefix keys that vLLM's text-only loader rejects, and that
+        produces a distinctive load failure.
+
+  - type: textarea
+    id: tests
+    attributes:
+      label: Test-suite output, if you ran it
+      description: >-
+        `pytest -q` skips the tiers your box cannot support, so the skip counts
+        are informative rather than noise. Please paste the summary line.
+      render: text

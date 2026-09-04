@@ -1,0 +1,15 @@
+{
+  "name": "mcp-qsql-suggester",
+  "description": "The qSQL specialist MCP server and the Claude Code skills that drive it",
+  "owner": {
+    "name": "KX"
+  },
+  "plugins": [
+    {
+      "name": "mcp-qsql-suggester",
+      "source": "./",
+      "description": "Draft qSQL via the fine-tuned qwen specialist — /qsql-coder (with Bash-verify) and /qsql-coder-quick",
+      "category": "development"
+    }
+  ]
+}

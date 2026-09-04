@@ -1,0 +1,73 @@
+# Local-only memory file for the assistant — not for sharing.
+MEMORY.md
+
+# Per-developer Claude Code settings (personal tool-permission allowlist).
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local sandboxes
+.tmp_*/
+.venv/
+venv/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# KX proprietary artefacts — must never be committed. Both the kdb+ licence
+# and qlint.q_ are licensed separately, so redistributing them via this repo
+# is a licence question, not just a secrets one. Supply your own copies and
+# point QLIC / QLINT_DIR at them.
+*.lic
+qlint.q_
+*.q_
+
+# Project-scope MCP config. The tracked, public-safe default lives in
+# `.mcp.json.example`; the active `.mcp.json` is copied from it and is
+# deliberately never tracked, so a deployment endpoint cannot be committed
+# by accident.
+#
+# Keep this an EXACT path, never `/.mcp.json*`. The glob would also ignore
+# `.mcp.json.example`, which is the one file a self-hoster needs us to ship —
+# and it would fail silently, because `git add -A` just declines to stage it.
+/.mcp.json
+
+# Generated eval artifacts. Nothing in the published tree writes these; the
+# rules exist so a maintainer checkout that does cannot stage them. Matched at
+# any depth so the rule does not have to name a path that only exists there.
+**/eval/phase_*.jsonl
+**/eval/phase_*.log
+
+# Release-preparation outputs (tools/prepare_release.py). The weights must
+# never land in a git tree at all — the script refuses to write into a
+# working tree that does not already ignore its output — but belt and braces,
+# in the same spirit as the *.q_ rule above: a stray `git add -A` after a
+# manual copy should not be able to stage 18 GB of model.
+/release/
+/releases/
+/hf-release/
+*.safetensors
+model.safetensors.index.json
+*.bin
+*.pt
+
+# The facts report and log embed the absolute path of the checkpoint they were
+# run against, so they are a leak-scan hit as well as noise. The pattern is
+# coupled to FACTS_NAME_FMT in tools/prepare_release.py — `--facts <dir>` writes
+# `release_facts_<checkpoint>.json`, which is what this matches. Change one and
+# change the other, or a report dropped in the repo stops being ignored.
+release_facts*.json
+prepare_release*.log

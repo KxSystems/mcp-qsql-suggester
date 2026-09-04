@@ -1,0 +1,75 @@
+# Tier 1 only — see tests/README.md for the four-tier story.
+#
+# Tier 1 is pure logic: no q, no kdb+ licence, no pykx, no qlint.q_, no GPU.
+# `pip install pytest` is the entire setup, and that is deliberate — it is the
+# one tier an outside contributor can run, so it is the one CI must protect.
+#
+# Tiers 2-4 are NOT run here and cannot be:
+#   - tier 2 (real embedded q, model stubbed) needs a kdb+ licence, which is
+#     not something this repo can carry;
+#   - tier 3 additionally needs a working qlint.q_, which ships inside an
+#     EULA-gated KX download and is far too large to inject as a secret;
+#   - tier 4 additionally needs a GPU serving the fine-tuned model, and it
+#     samples at a non-zero temperature, so it can go red on an unlucky draw
+#     rather than on a code regression.
+# Run those locally per tests/README.md.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: tier 1 (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both ends of the supported range. 3.10 is the floor declared in
+        # pyproject.toml; testing it is what stops that floor from quietly
+        # becoming a lie.
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # No editable install and no requirements file: pyproject.toml's
+      # `pythonpath = ["."]` lets a bare pytest resolve the packages straight
+      # out of the checkout. Anything more would drag in pykx.
+      - name: Install pytest
+        run: python -m pip install --disable-pip-version-check --quiet pytest
+
+      - name: Tier 1
+        run: pytest -q -m "not needs_q"
+
+      # The embedded-q suites must remain *importable* without pykx — they skip
+      # themselves at module level instead of erroring. A collection error here
+      # would mean an outside contributor sees a red suite they cannot fix,
+      # which is exactly the failure this repo has already had once.
+      - name: Tiers 2-3 skip cleanly without pykx
+        run: |
+          pytest -q --collect-only \
+            tests/test_pipeline_gates.py \
+            tests/test_pipeline_gates_qlint.py; rc=$?
+          # pytest exits 5 for "no tests collected", which IS the expected
+          # outcome here: both modules skip themselves at import time because
+          # pykx is absent. 0 would mean they collected anyway; 2 means a real
+          # collection error. Only those two are failures.
+          if [ "$rc" -ne 5 ]; then
+            echo "expected exit 5 (modules skipped for want of pykx), got $rc"
+            exit 1
+          fi

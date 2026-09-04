@@ -1,0 +1,20 @@
+{
+  "name": "mcp-qsql-suggester",
+  "version": "0.1.0",
+  "description": "Draft qSQL via a fine-tuned qwen specialist — parse + KX qlint C9 + multi-seed runtime-exec gates, with self-consistency clustering over independent candidates.",
+  "author": {
+    "name": "KX"
+  },
+  "homepage": "https://github.com/KxSystems/mcp-qsql-suggester",
+  "keywords": [
+    "qsql",
+    "kdb",
+    "q",
+    "kx",
+    "mcp",
+    "code-generation"
+  ],
+  "skills": [
+    "./.claude/skills/"
+  ]
+}

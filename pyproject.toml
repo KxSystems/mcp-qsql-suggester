@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-qsql-suggester"
+version = "0.1.0"
+description = "MCP server wrapping a fine-tuned qSQL specialist (qsql-qwen35-9b) with parse + KX qlint + runtime-exec gates"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.27",
+    "httpx>=0.28",
+    "starlette>=0.40",
+]
+
+# pykx is required at runtime (embedded q via libq) but is NOT declared
+# here — it is licensed separately and typically installed manually into
+# the conda env. Verify with:
+#   python -c "import pykx; print(pykx.__version__)"
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.setuptools]
+packages = ["mcp_server", "mcp_qsql_shared"]
+
+# `tests/` is tier 1 only: pure logic, importable with nothing but pytest.
+# `pythonpath` lets a bare `pytest` resolve the packages from a source
+# checkout, so CI needs no editable install (and therefore no pykx, no
+# kdb+ license, no qlint.q_, no GPU). The tier 2 / tier 3 suites are
+# `python -m mcp_server.smoke_test` and `python -m mcp_server.protocol_test`;
+# they are deliberately NOT collected here. See tests/README.md.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# -ra so a skip always prints its reason, `-q` included. A tier that skips
+# itself is normal (tiers 2 and 3 are optional rungs), but the count alone
+# cannot distinguish "no licence on this box" from "pytest came off PATH and
+# has no pykx" — and a module-level skip counts once, not once per test, so
+# `2 skipped` is all a bare run says about 14 missing tests. See
+# `tests/_tiers.py`.
+addopts = ["-ra"]
+markers = [
+    "needs_q: tier 2 — needs embedded q (pykx + a kdb+ licence). Does NOT need qlint.q_. Run with `pytest -m 'needs_q and not needs_qlint'`; skipped entirely by `-m 'not needs_q'`.",
+    "needs_qlint: tier 3 — additionally needs a working qlint.q_ (a full AxLibraries ws/ tree, not just the loader stub). Lives in tests/test_pipeline_gates_qlint.py; select with `pytest -m needs_qlint`. Those tests also skip themselves at runtime when the gate is disabled, so a bare `pytest` stays correct without any flag.",
+]

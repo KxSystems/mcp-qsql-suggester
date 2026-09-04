@@ -1,0 +1,24 @@
+# Contact links appear above the issue-template chooser, which is the only
+# place a reader is still looking *before* they open an issue. The first entry
+# exists to head off the request we expect most often; see README.md
+# § "What is and is not in this release".
+blank_issues_enabled: true
+contact_links:
+  - name: Training data and fine-tuning pipeline — not part of this release
+    url: https://github.com/KxSystems/mcp-qsql-suggester#what-is-and-is-not-in-this-release
+    about: >-
+      The training corpus and the pipeline that produced the model are not
+      published and there are no plans to publish them. Please read this
+      before opening an issue asking for either.
+  - name: Reporting a security vulnerability
+    url: https://github.com/KxSystems/mcp-qsql-suggester/blob/main/SECURITY.md
+    about: >-
+      Do not file security reports as public issues. SECURITY.md explains what
+      is in scope — note that the server executing model-generated q without a
+      sandbox is documented behaviour, not a vulnerability.
+  - name: Support for licensed kdb+ subscribers
+    url: https://client.support.kx.com/
+    about: >-
+      The KX support portal, available to licensed subscribers. Use it if you
+      would rather not discuss the details in public; otherwise an issue here is
+      faster and the answer stays visible to the next person.

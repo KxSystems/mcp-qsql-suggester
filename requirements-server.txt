@@ -1,0 +1,21 @@
+# Pinned server-side stack — the set verified working on 2026-08-13.
+# Only calling an already-running server instead? See requirements-client.txt.
+# Setting up the vLLM model host? That is a SEPARATE env: requirements-vllm.txt.
+#
+# `pip install -e .` alone is NOT enough to reproduce a working server:
+# pyproject.toml's specifiers are unbounded (`mcp>=1.27` etc.), so a fresh
+# install drifts to whatever is newest, and pykx is deliberately undeclared.
+# Use this file to rebuild instead:
+#
+#   conda create -n <your-server-env> python=3.12 -y
+#   conda run -n <your-server-env> pip install -r requirements-server.txt
+#   conda run -n <your-server-env> pip install -e .
+#
+# Still needed beyond pip: a pykx licence (`QLIC` + `QHOME`), `QLINT_DIR`
+# pointing at a dir containing qlint.q_, and a vLLM server. See CLAUDE.md.
+# Verify: `python -m mcp_server.smoke_test` (3/3) then `-m mcp_server.protocol_test`.
+
+mcp==1.27.1        # 2.0 renamed streamablehttp_client -> streamable_http_client
+httpx==0.28.1
+starlette==1.0.0
+pykx==3.1.9        # licensed separately; install is pip, licence is not

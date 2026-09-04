@@ -1,0 +1,73 @@
+# Applies the pull-request policy in CONTRIBUTING.md § "Pull requests": comment,
+# then close. It is a *statement* being applied consistently, not enforcement —
+# GitHub has no platform-level switch to disable pull requests or forking on a
+# public repo, so this workflow is the only thing that stops an outside patch
+# sitting open and unattended for months, which is the outcome the policy exists
+# to avoid.
+#
+# Two things about it are deliberate:
+#
+#   - `pull_request_target`, not `pull_request`. A `pull_request` run triggered
+#     from a fork gets a read-only GITHUB_TOKEN, so it cannot close the very PR
+#     it is reacting to. `pull_request_target` runs in the base repo's context
+#     with a writable token. That trigger has a well-known privilege-escalation
+#     footgun — but the footgun is checking out and executing the PR's code, and
+#     this job never checks anything out. It calls two API endpoints and holds
+#     exactly one permission.
+#
+#   - Collaborators are exempt. Maintainers route their own changes to the
+#     published files through a PR on this repo (branch -> push -> PR ->
+#     merge), so a policy that closed every PR would close the maintainers'
+#     own workflow along with the outside ones. `author_association` is
+#     computed by GitHub from the actor's permissions on this repo and is not
+#     something a fork's PR can set.
+#
+# Note ci.yml keeps its `pull_request:` trigger on purpose, for the same reason:
+# those maintainer PRs are exactly the ones that should be tested.
+
+name: close-prs
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  close:
+    # OWNER / MEMBER / COLLABORATOR are the three associations that mean "has
+    # push access here". Everything else — CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR,
+    # NONE — is an outside PR and gets the policy.
+    if: >-
+      github.event.pull_request.author_association != 'OWNER' &&
+      github.event.pull_request.author_association != 'MEMBER' &&
+      github.event.pull_request.author_association != 'COLLABORATOR'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment and close
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr comment "$PR_URL" --body "$(cat <<'EOF'
+          Thanks for taking the time to write this.
+
+          This project is not accepting pull requests at the moment, so I am
+          closing this one automatically rather than leaving it open unattended.
+          That is the policy being applied consistently — it is not a judgement
+          on the contents of your patch, which nobody has reviewed.
+
+          The reason is in
+          [CONTRIBUTING.md](${{ github.server_url }}/${{ github.repository }}/blob/HEAD/CONTRIBUTING.md#pull-requests):
+          tiers 2 to 4 of the test suite need a kdb+ licence, pykx and KX's EULA-gated
+          `qlint.q_`, so neither public CI nor a contributor without those can
+          verify a change to the parts of this server most likely to break.
+
+          If there is a bug or a gap behind this change, please open an issue
+          describing it — under this policy that genuinely is more useful to us
+          than a patch. And the code is Apache-2.0, so you are free to carry the
+          change in a fork.
+          EOF
+          )"
+          gh pr close "$PR_URL"

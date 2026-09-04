@@ -1,0 +1,25 @@
+# Model-host stack — vLLM serving qsql-qwen35-9b. Verified 2026-08-13.
+# NOT the MCP server env: see requirements-server.txt for that, and
+# requirements-client.txt for just calling an already-running MCP server.
+#
+# Install into a dedicated env, kept separate from the MCP server's so
+# vllm's pinned deps don't collide with pykx / mcp:
+#
+#   conda create -y -n <your-vllm-env> python=3.12
+#   conda run -n <your-vllm-env> pip install --no-cache-dir -r requirements-vllm.txt
+#
+# Deliberately only one pin: vllm resolves its own torch / transformers
+# (verified set: torch 2.13.0 + transformers 5.15.0 on Python 3.12,
+# ~8.2 GB), and those wheels are CUDA-specific — freezing them makes
+# rebuilds harder, not easier. `--no-cache-dir` avoids leaving another
+# ~5 GB of wheels in ~/.cache/pip.
+#
+# Do NOT add bitsandbytes / autoawq — both are broken on this
+# architecture (see mcp_server/VLLM.md § "Known-broken combos").
+#
+# Still needed beyond pip: a GPU, and the *_merged_unwrapped/ variant of
+# the fine-tuned checkpoint (the wrapped one has multimodal-prefix keys
+# that vllm's text-only loader rejects). Launch flags, clean-install
+# verification, and troubleshooting: mcp_server/VLLM.md
+
+vllm==0.27.1       # first release with native text-only Qwen3_5ForCausalLM
