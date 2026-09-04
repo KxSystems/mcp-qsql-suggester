@@ -62,9 +62,17 @@ jobs:
       # which is exactly the failure this repo has already had once.
       - name: Tiers 2-3 skip cleanly without pykx
         run: |
+          # `rc=0` plus `|| rc=$?` is load-bearing, not style. GitHub runs a
+          # `run:` block under `bash -e {0}`, and `set -e` aborts the step at
+          # the failing command *before* a following `rc=$?` can execute — so
+          # the plain `; rc=$?` spelling made the check below dead code and
+          # failed the step with pytest's own exit 5, which is the expected
+          # outcome here. An assignment on the right of `||` is one of the few
+          # forms `set -e` exempts.
+          rc=0
           pytest -q --collect-only \
             tests/test_pipeline_gates.py \
-            tests/test_pipeline_gates_qlint.py; rc=$?
+            tests/test_pipeline_gates_qlint.py || rc=$?
           # pytest exits 5 for "no tests collected", which IS the expected
           # outcome here: both modules skip themselves at import time because
           # pykx is absent. 0 would mean they collected anyway; 2 means a real
