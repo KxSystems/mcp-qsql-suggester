@@ -15,12 +15,19 @@
 #     this job never checks anything out. It calls two API endpoints and holds
 #     exactly one permission.
 #
-#   - Collaborators are exempt. Maintainers route their own changes to the
-#     published files through a PR on this repo (branch -> push -> PR ->
-#     merge), so a policy that closed every PR would close the maintainers'
-#     own workflow along with the outside ones. `author_association` is
-#     computed by GitHub from the actor's permissions on this repo and is not
-#     something a fork's PR can set.
+#   - Maintainers are exempt. They route their own changes to the published
+#     files through a PR on this repo (branch -> push -> PR -> merge), so a
+#     policy that closed every PR would close the maintainers' own workflow
+#     along with the outside ones.
+#
+#     The exemption is decided by WHERE THE HEAD BRANCH LIVES, not by
+#     `author_association`. Creating a branch in this repository already
+#     requires push access; an outside contribution can only arrive from a
+#     fork. `author_association` is kept as a second, narrower exemption (an
+#     org member opening a PR from a fork) but is NOT trusted on its own: it
+#     is a relationship label rather than a permission check, and on
+#     2026-09-04 it reported neither MEMBER nor COLLABORATOR for a repo
+#     admin, which closed our own first release PR.
 #
 # Note ci.yml keeps its `pull_request:` trigger on purpose, for the same reason:
 # those maintainer PRs are exactly the ones that should be tested.
@@ -36,10 +43,30 @@ permissions:
 
 jobs:
   close:
-    # OWNER / MEMBER / COLLABORATOR are the three associations that mean "has
-    # push access here". Everything else — CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR,
-    # NONE — is an outside PR and gets the policy.
+    # The FIRST condition is the load-bearing one, and it is a structural
+    # permission test rather than a label lookup: a PR whose head branch lives
+    # in THIS repository could only have been created by someone who already
+    # has push access, so it is never an outside contribution. Our own release
+    # PRs (release/<date>-p<IID> -> main) are exactly that shape.
+    #
+    # It exists because `author_association` — which this job used alone until
+    # 2026-09-04 — is a RELATIONSHIP label, not a permission, and it reported
+    # something other than OWNER/MEMBER/COLLABORATOR for a user holding repo
+    # admin. It closed release PR #1, the first PR this repo ever received.
+    # The cause was a PRIVATE organization membership: GitHub does not report
+    # MEMBER for a private member, and access by org membership rather than a
+    # direct collaborator entry rules out COLLABORATOR too. Making the
+    # membership public would restore the label, and is deliberately not the
+    # fix — that would make this workflow's correctness depend on one person's
+    # profile setting.
+    #
+    # Note every condition here is a NEGATIVE comparison, so an unexpected,
+    # empty or absent field makes them all true and the PR gets closed. That
+    # failure direction is why the head-repo test goes first: it is derived
+    # from two fields that cannot be empty on a real pull_request_target
+    # payload, and it fails toward LEAVING A PR OPEN.
     if: >-
+      github.event.pull_request.head.repo.full_name != github.repository &&
       github.event.pull_request.author_association != 'OWNER' &&
       github.event.pull_request.author_association != 'MEMBER' &&
       github.event.pull_request.author_association != 'COLLABORATOR'
