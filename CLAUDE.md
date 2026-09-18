@@ -194,6 +194,19 @@ map. Summary of the self-consistency pipeline inside `run_generate_loop`:
    cluster (largest total weight) is the answer; the shortest-code
    candidate within it is returned.
 
+**`eval_compare.q` exists twice and the two copies deliberately differ.**
+`mcp_server/eval_compare.q` serves clustering above;
+`.claude/skills/qsql-coder/eval_compare.q` serves the skill's Bash-verify and
+additionally normalizes temporal resolution, so a `u` minute-of-day bucket
+compares equal to the `p` timestamp bucket covering that minute. Clustering
+asks "did independent samples agree?" — where a type difference *is*
+disagreement, and keeping those candidates in separate clusters is what drops
+`winning_cluster_fraction` below the skill's verify threshold so the
+difference gets checked. Bash-verify asks "does this match the reference's
+intent?", where the same difference is presentation. **Do not re-sync them**;
+both file headers carry the full argument, and `internal/eval/README.md`
+trap 11 records which copy the eval harness grades with.
+
 `table_schemas` is **required** at the tool entry — the model was
 trained with schemas in context and clustering needs them to build
 dummy tables.
@@ -269,7 +282,7 @@ tier with `-m` is a usage error rather than a silent `0 passed, N skipped`
 resolves through `PATH` and may not be the env holding pykx.
 Full detail in [`tests/README.md`](tests/README.md).
 
-**Tier 1 — pure logic** (87 tests). No q, no kdb+ license, no pykx, no
+**Tier 1 — pure logic** (98 tests). No q, no kdb+ license, no pykx, no
 `qlint.q_`, no GPU. Covers `extract_qsql`, the self-consistency decision
 logic (round-cap validation, union-find, winning-cluster choice +
 tie-break, shortest-code pick, `ROUND_MIN_WEIGHT` thresholds), the
@@ -277,11 +290,13 @@ tie-break, shortest-code pick, `ROUND_MIN_WEIGHT` thresholds), the
 claims (`.claude/skills/.../format_output.py`). The one tier every CI
 runs (`unit`).
 
-**Tier 2 — the gates against real embedded q, model stubbed** (8 tests).
+**Tier 2 — the gates against real embedded q, model stubbed** (47 tests).
 Needs pykx + a licence, but **no qlint, no GPU and no vLLM**:
 `vllm_client.chat` is replaced with fixed completions, while parse,
-multi-seed execution and clustering all run for real. CI-able only where a
-kdb+ licence can be supplied as a secret.
+multi-seed execution and clustering all run for real (9 tests), plus the
+skill copy of `eval_compare.q` and its deliberate divergence from the server
+copy (38 tests). CI-able only where a kdb+ licence can be supplied as a
+secret.
 
 **Tier 3 — the claims that need a real linter** (6 tests). Additionally
 needs a working `qlint.q_` — a full AxLibraries `ws/` tree, not just the

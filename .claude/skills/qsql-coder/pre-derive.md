@@ -139,7 +139,9 @@ alloc: genTable0[parseSchema0["`tradeId`allocAcct`allocQty!`j`s`j"]; NROWS0];
 -1 .eval.descSchema[.eval.tmpRes];
 exit 0;
 PYEOF
-mapfile -t LINES < <(q /tmp/preshape.q -q </dev/null 2>&1)
+# timeout -k: a spinning q ignores SIGTERM and -T does not bound a script file —
+# SKILL.md § "Bash-verify protocol" has the measurements. GNU coreutils; drop it if absent.
+mapfile -t LINES < <(timeout -k 5 60 q /tmp/preshape.q -q </dev/null 2>&1)
 SHAPE="${LINES[0]}"           # descVal — for MCP's expected_result_schema (matches eval format)
 DISPLAY_SHAPE="${LINES[1]}"   # descSchema — for formatter's pre_derive_shape (dev-friendly)
 ```

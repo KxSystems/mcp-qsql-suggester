@@ -17,7 +17,31 @@ from mcp_qsql_shared.qlint_common import qlint_gate
 from mcp_qsql_shared.qlint_policy import QLINT_DISABLED_NOTE
 
 
-_C9_SKIP_RULES = frozenset(["UNINDENTED_CODE"])
+#: Rules to drop before counting errors. EMPTY ON PURPOSE — the mechanism is
+#: kept because a future rule may need it, but nothing is skipped today.
+#:
+#: ``UNINDENTED_CODE`` used to live here, described as "formatting-only". That
+#: description is right for a checker whose job is to filter q snippets on
+#: their way to a tokenizer — such a string is never loaded as a q script, so
+#: its indentation genuinely cannot matter, and dropping an otherwise-good
+#: snippet over it is pure loss. This checker started life doing exactly that.
+#:
+#: It does not hold for gate 2, whose consumers EXECUTE the code, and do it by
+#: SCRIPT LOAD — where q begins a new statement at any line starting in column
+#: 0, so an unindented continuation line inside an unclosed brace is a ``'{``
+#: error and not a formatting preference:
+#:
+#:   gate 3 (mcp_server/qexec.py)  ``@[value; code; ...]``   -> indifferent
+#:   the skill's Bash-verify       ``q /tmp/verify_*.q -q``  -> FAILS
+#:   a user pasting it into a .q file                        -> FAILS
+#:
+#: Measured before enabling, over 39 drafts for KX's public NYSE TAQ benchmark
+#: query set: the rule fires on exactly 1 of them, that one is exactly the
+#: draft that runs under ``value`` and dies under script load, and 21 of the
+#: other 22 multi-line drafts do not trigger it — no false positives, no
+#: misses. It was also the only error-level rule to fire at all across the 39,
+#: so enabling it adds no noise.
+_C9_SKIP_RULES: frozenset[str] = frozenset()
 
 #: Rules whose message adds nothing once q's own parse error is being reported.
 #: Callers that already have a parse error pass ``parse_failed=True`` to drop
@@ -34,7 +58,8 @@ def check_c9_qlint(
     """C9: KX qlint errors — fail if .qlint.lintItem reports any error-level issues.
 
     Exceptions (not counted as failures):
-    - ``UNINDENTED_CODE`` — formatting-only, always skipped.
+    - (nothing is skipped unconditionally; see ``_C9_SKIP_RULES`` for why
+      ``UNINDENTED_CODE`` no longer is.)
     - ``DECLARED_AFTER_USE`` — forgiven when the variable name appears in
       ``schema_names`` (a table the caller declares as pre-existing).
     - ``CANNOT_PARSE`` — dropped when ``parse_failed=True``, i.e. the caller is

@@ -56,6 +56,40 @@ REFERENCE_PRIORITY_HEADERS = {
     3: "### SUGGESTED CODE (generated)",
 }
 
+# Why verification did not happen, when the answer is not "nothing triggered it".
+# Cases A and D both used to state a *reason* for the absence of a reference
+# check -- case A a list ("no high-risk idiom, ..."), case D "outside my q
+# knowledge or the instruction is genuinely ambiguous" -- and both reasons are
+# false whenever the check was impossible rather than unnecessary. Quick mode
+# renders case A with no reference check at all, and full mode degrades to the
+# same shape when `q` is missing, so in both the old wording asserted something
+# untrue. The caller names the real reason instead; absent field keeps the
+# original wording, which is correct for a full-mode run that simply had no
+# trigger.
+VERIFICATION_UNAVAILABLE = {
+    "quick_mode": "quick mode does not verify against a reference",
+    "no_q": "`q` is not on PATH, so Bash-verify could not run",
+}
+
+# Case D's whole sentence, per reason, rather than one skeleton with the reason
+# slotted in: why no alternative was written and what the reader should do
+# differ together, not independently. Quick mode wrote none because rewriting
+# is not what it does; a missing q means one could not be verified. Composing
+# those from shared fragments produced "this skill only presents q it has
+# verified" under quick mode, which had just presented unverified q in case A.
+UNAVAILABLE_CASE_D = {
+    "quick_mode": (
+        "I did not write an alternative — quick mode presents the "
+        "specialist's draft or nothing, and never rewrites. For an "
+        "independently verified alternative, use `/qsql-coder` (full mode)."
+    ),
+    "no_q": (
+        "I did not write an alternative — `q` is not on PATH, so I could not "
+        "Bash-verify one, and this skill does not present q it has not "
+        "verified. Make `q` reachable and re-run for a verified alternative."
+    ),
+}
+
 
 def die(msg: str) -> None:
     print(f"format_output.py: {msg}", file=sys.stderr)
@@ -125,6 +159,26 @@ def _sc_summary(payload: dict, case: str) -> str:
     return summary
 
 
+def _verification_unavailable(payload: dict) -> str | None:
+    """The validated reason key for why verification could not run, or None.
+
+    Returns the key rather than the prose because the two renderers need
+    different halves of it: case A only states the reason, case D also has to
+    name a remedy. Validated here rather than at the call sites so a typo in
+    the enum is a hard error instead of silently falling through to the
+    wording that made the false claim in the first place.
+    """
+    reason = payload.get("verification_unavailable")
+    if reason is None:
+        return None
+    if reason not in VERIFICATION_UNAVAILABLE:
+        die(
+            "'verification_unavailable' must be one of "
+            f"{sorted(VERIFICATION_UNAVAILABLE)} (got {reason!r})"
+        )
+    return reason
+
+
 def _reference_fields(payload: dict, case: str) -> tuple[int, str, str]:
     p = payload.get("reference_priority")
     if p not in (1, 2, 3):
@@ -141,16 +195,17 @@ def render_case_a(payload: dict) -> list[str]:
     sc = _sc_summary(payload, "A")
     n = require(payload, "candidates_generated", "A")
     win = payload.get("winning_cluster_size", 0)
+    unavailable = _verification_unavailable(payload)
     out = ["### TOOL CODE (suggested)", ""]
     out += code_fence("q", qwen_code)
     # The "unanimous cluster" clause used to be unconditional, which
     # contradicted the candidate counts printed one clause earlier whenever the
     # winning cluster was a bare plurality ("4/8 candidates agreed ...
-    # unanimous self-consistency cluster"). Full mode cannot reach that state —
-    # SKILL.md's case-A row requires a unanimous cluster, and a split one is
-    # itself a Bash-verify trigger, so it lands in case B or C instead. Quick
-    # mode can: it renders case A whatever the cluster fraction, because it
-    # never verifies at all.
+    # unanimous self-consistency cluster"). Both modes can reach a plurality
+    # here: quick mode renders case A whatever the fraction because it never
+    # verifies, and full mode's cluster trigger is a threshold
+    # (`winning_cluster_fraction < 0.6` in SKILL.md), not unanimity, so a 7/8
+    # cluster with no other trigger is a legitimate case A.
     if win == n:
         reasons = (
             "no high-risk idiom, no functional form, unanimous "
@@ -159,18 +214,31 @@ def render_case_a(payload: dict) -> list[str]:
         tail = ""
     else:
         reasons = (
-            "no high-risk idiom, no functional form, no user-supplied "
-            "reference"
+            "no high-risk idiom, no functional form, a winning cluster above "
+            "the skill's agreement threshold, no user-supplied reference"
         )
+        # Numbers only, no verdict on what they warrant. Which fractions
+        # trigger a check is policy that lives in SKILL.md and is tunable; a
+        # renderer that asserted "this is a Bash-verify trigger" would go
+        # stale the moment that threshold moved, which is exactly what
+        # happened when it moved from 1.0 to 0.6.
         tail = (
             f" The winning cluster was a plurality rather than unanimous "
-            f"({win} of {n}) — on its own that is a Bash-verify trigger in "
-            f"full mode."
+            f"({win} of {n})."
         )
-    out.append(
-        f"**Verdict**: passed=true, {sc}. No verification "
-        f"triggered ({reasons}).{tail}"
-    )
+    if unavailable:
+        # No reason list: the draft was not held up against a reference, so
+        # none of "no high-risk idiom, no functional form, ..." was ever
+        # established. Claiming them here is exactly the bug this replaces.
+        out.append(
+            f"**Verdict**: passed=true, {sc}. Not verified — "
+            f"{VERIFICATION_UNAVAILABLE[unavailable]}.{tail}"
+        )
+    else:
+        out.append(
+            f"**Verdict**: passed=true, {sc}. No verification "
+            f"triggered ({reasons}).{tail}"
+        )
     out.append("")
     out += render_idiom_note(payload)
     return out
@@ -235,6 +303,7 @@ def render_case_d(payload: dict) -> list[str]:
     could_write = payload.get("opus_could_write")
     if not isinstance(could_write, bool):
         die("case=D: 'opus_could_write' must be a boolean")
+    unavailable = _verification_unavailable(payload)
     issues_repr = json.dumps(final_issues, ensure_ascii=False)
     out: list[str] = []
     if could_write:
@@ -252,12 +321,21 @@ def render_case_d(payload: dict) -> list[str]:
     else:
         out += ["### TOOL CODE (failed)", ""]
         out += code_fence("q", qwen_code)
+        # Two different reasons for the same empty result, and they call for
+        # different next steps from the reader: nothing to write vs. nothing
+        # to verify a write against. Conflating them told a user with no q on
+        # PATH that their instruction was ambiguous.
+        if unavailable:
+            why = UNAVAILABLE_CASE_D[unavailable]
+        else:
+            why = (
+                "I could not confidently write an alternative — task is "
+                "outside my q knowledge or the instruction is genuinely "
+                "ambiguous. Please refine the instruction or schema."
+            )
         out.append(
             f"**Verdict**: no self-consistency cluster survived gating "
-            f"(passed=false, {sc}, final_issues=`{issues_repr}`). I could "
-            f"not confidently write an alternative — task is outside my q "
-            f"knowledge or the instruction is genuinely ambiguous. Please "
-            f"refine the instruction or schema."
+            f"(passed=false, {sc}, final_issues=`{issues_repr}`). {why}"
         )
     out.append("")
     out += render_idiom_note(payload)
@@ -282,6 +360,15 @@ def main() -> None:
     case = payload.get("case")
     if case not in RENDERERS:
         die(f"'case' must be one of A, B, C, D (got {case!r})")
+    # B and C *are* the verified cases -- they carry a reference priority, a
+    # source label and a verify shape. Saying verification was unavailable
+    # there is a contradiction, not a nuance, so refuse it rather than render
+    # a self-arguing verdict.
+    if payload.get("verification_unavailable") is not None and case not in ("A", "D"):
+        die(
+            f"case={case}: 'verification_unavailable' applies to case A or D "
+            f"only (B and C are the Bash-verified cases)"
+        )
     out_lines = render_preamble(payload) + RENDERERS[case](payload)
     sys.stdout.write("\n".join(out_lines).rstrip() + "\n")
 

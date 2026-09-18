@@ -6,8 +6,8 @@ run is decided by what you have, not by what you choose.
 
 | Tier | Adds | Count | Where it lives | Runs in CI? |
 |---|---|---|---|---|
-| **1** Pure logic | pytest, nothing else | 87 | `test_extract.py`, `test_self_consistency.py`, `test_qlint_policy.py`, `test_format_output.py` | ✅ `unit` |
-| **2** Embedded q | pykx + a kdb+ licence | 8 | `test_pipeline_gates.py` (`needs_q`) | ⚠️ only with a kdb+ licence secret |
+| **1** Pure logic | pytest, nothing else | 98 | `test_extract.py`, `test_self_consistency.py`, `test_qlint_policy.py`, `test_format_output.py` | ✅ `unit` |
+| **2** Embedded q | pykx + a kdb+ licence | 47 | `test_pipeline_gates.py`, `test_eval_compare_skill.py` (`needs_q`) | ⚠️ only with a kdb+ licence secret |
 | **3** Real qlint | a working `qlint.q_` | 6 | `test_pipeline_gates_qlint.py` (`needs_qlint`) | ❌ nobody's — see below |
 | **4** Live model | a vLLM serving the model | 3 + 1 | `mcp_server/smoke_test.py`, `mcp_server/protocol_test.py` | ❌ by hand only |
 
@@ -18,15 +18,15 @@ Install the dependencies you have access to, then run `pytest -q`. Tiers 2 and
 command is correct at every rung** — no flag juggling.
 
 ```bash
-# Rung 1 — nothing but pytest                        -> 87 passed, 2 skipped
+# Rung 1 — nothing but pytest                        -> 98 passed, 3 skipped
 pip install pytest
 pytest -q
 
-# Rung 2 — + pykx and a kdb+ licence                 -> 95 passed, 6 skipped
+# Rung 2 — + pykx and a kdb+ licence                 -> 145 passed, 6 skipped
 pip install -r requirements-server.txt
 pytest -q
 
-# Rung 3 — + a working qlint.q_                      -> 101 passed
+# Rung 3 — + a working qlint.q_                      -> 151 passed
 export QLINT_DIR=<...>/ax-libraries/ws
 pytest -q
 
@@ -38,7 +38,7 @@ QLINT_DIR=$QLINT_DIR PYTHONPATH=. python -m mcp_server.protocol_test
 **A skipped tier always prints its reason** (`addopts = ["-ra"]` in
 `pyproject.toml`), because the counts alone are ambiguous and misleadingly
 small: a module-level skip counts **once**, not once per test, so rung 1 above
-reports `2 skipped` for 14 absent tests, and nothing in `87 passed, 2 skipped`
+reports `3 skipped` for 53 absent tests, and nothing in `98 passed, 3 skipped`
 distinguishes "no kdb+ licence on this box" from "`pytest` came off `PATH` and
 that interpreter has no pykx". The reason line names the interpreter:
 
@@ -54,13 +54,13 @@ To run one tier in isolation — which is what the CI jobs do, so that their
 scope cannot drift with whatever happens to be installed on a runner:
 
 ```bash
-pytest -q -m "not needs_q"                  # tier 1        -> 87 passed
-pytest -q -m "needs_q and not needs_qlint"  # tier 2        -> 8 passed
+pytest -q -m "not needs_q"                  # tier 1        -> 98 passed
+pytest -q -m "needs_q and not needs_qlint"  # tier 2        -> 47 passed
 pytest -q -m needs_qlint                    # tier 3        -> 6 passed
 ```
 
 **Naming a tier that cannot run here is an error, not a skip.** Those three
-commands ask for a specific tier and nothing else, so answering `2 skipped, 87
+commands ask for a specific tier and nothing else, so answering `3 skipped, 98
 deselected` — indistinguishable from the tolerated absence above — would answer
 the wrong question. `tests/_tiers.py` probes the tier from
 `conftest.pytest_configure` and fails the run before collection instead:
@@ -135,18 +135,44 @@ messages stay actionable (where to get qlint, how to opt out, how to harden).
 `mcp_qsql_shared.qlint_policy` is kept pykx-free precisely so this can be
 tier 1 — the gate has to be decided before anything touches embedded q.
 
-`test_format_output.py` — the case-A verdict assembled by
+`test_format_output.py` — the verdicts assembled by
 `.claude/skills/qsql-coder/scripts/format_output.py`, the renderer both skills
-share and the plugin ships. It asserts that a claim of unanimity appears exactly
-when the candidate counts support it, that a non-unanimous cluster states how
-split it was, and that the `lint_gate: disabled` disclosure composes with either
-shape. Added after a real `/qsql-coder-quick` run printed
-`5/8 candidates agreed ... unanimous self-consistency cluster` — the clause was
-a constant beside computed counts. The assertions deliberately target those
-invariants rather than the verdict's exact wording, so copy-edits stay free and
-only a semantic regression fails. It runs the script as a subprocess, which is
+share and the plugin ships. Every test here guards one property: **the verdict
+may not claim something the run did not establish.** Added after a real
+`/qsql-coder-quick` run printed `5/8 candidates agreed ... unanimous
+self-consistency cluster` — the clause was a constant beside computed counts —
+and grown as the same family of defect turned up in the *reasons* a verdict
+gives. So it covers: a unanimity claim appearing exactly when the counts
+support it; a plurality stating how split it was, without ruling on whether
+that warrants a check (the threshold is tunable skill policy, and moved from
+`1.0` to `0.6`); `verification_unavailable` replacing case A's reason list
+rather than sitting beside it, since quick mode never consults the high-risk
+idiom list and a missing `q` makes the check impossible rather than
+unnecessary; case D naming the right remedy for each of those two reasons; the
+field being refused on cases B and C, which are the verified cases by
+definition; and the `lint_gate: disabled` disclosure composing with either
+cluster shape. The assertions deliberately target those invariants rather than
+the verdicts' exact wording, so copy-edits stay free and only a semantic
+regression fails. It runs the script as a subprocess, which is
 both the skills' real contract (a heredoc pipe) and the way to exercise a file
 that is not an importable package.
+
+`test_eval_compare_skill.py` — **tier 2** — the skill copy of
+`eval_compare.q`, which is a deliberate fork of `mcp_server`'s: it treats two
+temporal columns on the same resolution chain as equal (a `u` minute-of-day
+bucket vs the `p` timestamp bucket covering the same minute), and the server
+copy does not. The fork exists because the two ask different questions —
+clustering asks "did independent samples agree?", where returning a different
+type *is* disagreement and is the signal that raises the Bash-verify trigger;
+Bash-verify asks "does this match my reference's intent?", where it is
+presentation. Prompted by a real run that told a user their correct
+`5 xbar time.minute` draft was wrong. The module loads the skill file into the
+shared embedded q and **restores the server copy on teardown**, since both
+define `.eval.cmp` into one namespace and pykx gives one q process per session.
+It also covers `.eval.wrapInfo` (why B-wrap prints `meta` rather than
+`.eval.descVal` — the latter formats only a keyed table's value columns, so it
+said nothing about a differing *key*) and the numeric guard-order fix that
+shipped with it.
 
 These tests reach `ClusterState`'s pure methods by populating `.uniques`
 and `._equal` directly, skipping `add_round` (which parses, lints, and
@@ -154,20 +180,26 @@ executes through pykx). See `_state()` in `test_self_consistency.py`.
 
 ## What tiers 2 and 3 cover
 
-One file each, sharing their fixtures via `conftest.py` — which is where
-`run_async`, `fake_chat`, `generate` and `lint_gate_disabled` live. Everything
-pykx-dependent is imported *inside* those fixtures, so `conftest.py` (loaded on
-every run, including tier-1-only ones) does not drag pykx into tier 1.
+Two files for tier 2 (`test_eval_compare_skill.py` is the second, described
+above under what it forks and why), one for tier 3, sharing their fixtures via
+`conftest.py` — which is where `run_async`, `fake_chat`, `generate` and
+`lint_gate_disabled` live. Everything pykx-dependent is imported *inside* those
+fixtures, so `conftest.py` (loaded on every run, including tier-1-only ones)
+does not drag pykx into tier 1.
 
-**Tier 2** — `test_pipeline_gates.py` (8 tests) — the gates end to end with the model stubbed: a
+**Tier 2** — `test_pipeline_gates.py` (9 tests) — the gates end to end with the model stubbed: a
 candidate that parses and lints clean but raises at execution (`price+sym`,
 float + symbol) must leave no cluster; an unparseable candidate must be
 rejected at the first gate; a 3-1 split must finalize on the majority when the
 round threshold is unreachable but no round remains; byte-identical
 completions must dedupe to one execution while keeping their combined weight;
 cosmetically different but execution-equivalent code must land in one cluster;
-and with the lint gate disabled the pipeline must still work while the
-execution gate still bites.
+with the lint gate disabled the pipeline must still work while the execution
+gate still bites, and `check_c9_qlint` must report `skipped` rather than a bare
+`pass=True` that reads as "linted clean"; and two overlapping calls in one
+process must each cluster against their own results (the HTTP transport's real
+shape — `_run_pykx` releases its lock across the awaited `chat`, so the calls
+interleave at round boundaries).
 
 **Tier 3** — `test_pipeline_gates_qlint.py` (6 tests) — the claims that need a real linter: that a response
 reports `lint_gate: "kx_qlint_c9"` when C9 genuinely ran, that a parse failure
