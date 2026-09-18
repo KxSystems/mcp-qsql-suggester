@@ -24,8 +24,16 @@ cannot be committed by accident). Customer UX is
 via the project-level skill **`/qsql-coder`**
 (`.claude/skills/qsql-coder/SKILL.md`), which gathers params,
 calls the MCP, and presents the verdict. The `TOOL_DESCRIPTION` in
-`server.py` remains worded to discourage auto-routing — invocation is
-through the slash command or explicit ask.
+`server.py` remains worded to discourage auto-routing — the tool is not
+meant to be reached except through a skill.
+
+**The two layers moved apart.** The *skills* do auto-invoke: their
+descriptions route on finance-qSQL wording, so the customer need not type
+a slash command. The *tool description* still does not, and that is the
+distinction the rest of this section is about — what must not happen is the
+primary model calling `generate_qsql` and presenting the result with no
+reference check, which is precisely what the skills exist to do. A skill
+firing on its own keeps that step; the tool firing on its own removes it.
 
 **Why opt-in (rationale):**
 
@@ -59,8 +67,10 @@ through the slash command or explicit ask.
 Net: the opt-in default remains, but its load-bearing reason has
 shifted from "gate rigor insufficient" → "semantic-intent verification
 requires the skill's orchestration of an independent reference".
-Flipping to auto-routing would re-open the semantic-intent gap because
-Opus wouldn't be in the loop to draft the reference.
+Flipping the **tool** to auto-routing would re-open the semantic-intent gap
+because Opus wouldn't be in the loop to draft the reference. Skill-level
+auto-invocation does not, for the reason above — the loop is still there,
+which is why the two layers are worded differently.
 
 ## Self-consistency clustering
 
@@ -114,7 +124,12 @@ Candidates that parse+lint+execute cleanly (non-degenerate, on **every**
 seed tested) are clustered by cross-seed output equivalence
 (`.eval.cmp`, `mcp_server/eval_compare.q`) — two candidates only join a
 cluster if their results agree on every seed, which rules out "agreed by
-coincidence on one dummy dataset". The **winning cluster** (largest total
+coincidence on one dummy dataset". Note the file: this is the **server's**
+`.eval.cmp`, which counts a type difference as disagreement. The skill's copy
+of the same name does not, and that is the point — clustering wants two
+candidates that returned differently-typed results kept apart, because the
+resulting low `winning_cluster_fraction` is what sends the difference to
+Bash-verify to be looked at. The **winning cluster** (largest total
 weight, duplicate candidate texts counted) is the answer; within it, the
 **shortest-code** candidate is returned. Duplicate candidate texts are
 deduped before execution (no re-running byte-identical code), and later
@@ -185,7 +200,7 @@ execution and no agreement, so the two strongest gates did not run.
 - `loop.py` — async `run_generate_loop()`; orchestrates qwen (via `n=` multi-sample requests) → self-consistency clustering (`self_consistency.py`) → winner selection. Serializes pykx calls via an asyncio lock + single-worker thread executor. Also owns the `MCP_QSQL_SC_ROUND_CAPS` / `MCP_QSQL_SC_TEMPERATURE` / `MCP_QSQL_SC_SEEDS` / `MCP_QSQL_SC_NROWS` startup config and the `MCP_RUNTIME_EXEC=0` / preflight-failure short-circuit.
 - `self_consistency.py` — the clustering engine: dedupes candidate texts, executes new ones across all seeds, unions execution-equivalent candidates (`.eval.cmp`), tracks the winning cluster + round thresholds (`ROUND_MIN_WEIGHT`), picks the shortest-code representative.
 - `qexec.py` — execution primitives used by `self_consistency.py`: dummy-table build/drop per seed, candidate exec+capture with error/timeout trapping, degenerate-result detection (`.eval.descVal`), cross-candidate equality (`.eval.cmp`), and root-namespace leaked-global cleanup (candidate code routinely assigns intermediate helpers that would otherwise accumulate across the server's lifetime).
-- `eval_compare.q` — mcp_server's own copy of `.eval.cmp` / `.eval.eqEps` / `.eval.descVal` / `.eval.fmtCols`. Deliberately NOT loaded from `.claude/skills/qsql-coder/eval_compare.q` — mcp_server is meant to be deployable standalone (see Prerequisites in the repo's `CLAUDE.md`), so it carries its own copy rather than depending on `.claude/skills/` being present.
+- `eval_compare.q` — mcp_server's own copy of `.eval.cmp` / `.eval.eqEps` / `.eval.descVal` / `.eval.fmtCols`. Deliberately NOT loaded from `.claude/skills/qsql-coder/eval_compare.q`, for two independent reasons. Packaging: mcp_server is meant to be deployable standalone (see Prerequisites in the repo's `CLAUDE.md`), so it carries its own copy rather than depending on `.claude/skills/` being present. Semantics: since 2026-09-08 the two are **not** the same function — the skill copy normalizes temporal resolution (a `u` minute-of-day bucket equals the `p` timestamp bucket covering that minute) and this one does not. Do not "re-sync" them; the file headers carry the argument.
 - `vllm_client.py` — module-level `httpx.AsyncClient` wrapping vLLM `/v1/chat/completions`. Disables Qwen3.5 thinking template explicitly; `chat(..., n=...)` returns all `n` completions from a single request (cheaper than `n` separate calls — the prompt is only prefilled once).
 - `smoke_test.py` — loop-only regression check (no MCP protocol). Covers happy-path, schema-aware lint, runtime-exec-catches-bug (every candidate invalid), exhaustion (every candidate unparseable), clustering-picks-majority (3-vs-1 split), and the `MCP_RUNTIME_EXEC=0` short-circuit.
 - `protocol_test.py` — full MCP protocol regression check. Spawns the server as a subprocess and drives JSON-RPC over stdio; surfaces `rounds_used`, `candidates_generated`, `winning_cluster_size`, `n_clusters` and candidate[0]'s gate results.
@@ -196,7 +211,7 @@ execution and no agreement, so the two strongest gates did not run.
 - `mcp_qsql_shared.qlint_kx.check_c9_qlint` — KX qlint C9 (schema-aware via `DECLARED_AFTER_USE` forgiveness).
 - `mcp_server/type_gen.q` — **server-side** q-side `typeGen` / `parseSchema0` / `genTable0` for dummy-table generation. The column-type vocabulary matches what the model saw at training / evaluation time. Consumed by `qexec.py` (self-consistency execution) and the `/qsql-coder` skill's `pre-derive.md` (those two must share dummy bytes so the shape hint matches what qwen sees at runtime). The skill's Bash-verify reference compare uses a separate verify-tuned dummy — see `.claude/skills/qsql-coder/verify_gen.q` (same API, denser data: 1000 rows / 3 syms / 2h span for grouped-query rigor).
 - `mcp_server.type_gen.TYPE_GEN_STMTS` — thin Python loader exposing one element, `\l <abs-path-to-type_gen.q>`, so `qexec._ensure_typegen` can iterate-and-send unchanged.
-- The skill-side q helpers (tolerant equality, shape descriptor, divergence diagnostic) live with the skill at `.claude/skills/qsql-coder/eval_describe.q` and `.claude/skills/qsql-coder/eval_compare.q`. They are NOT imported by anything in `mcp_server/` (which has its own independent copy of the subset it needs — `mcp_server/eval_compare.q`, see "Files" above); the skill `cat`s its own copies into ad-hoc verify scripts.
+- The skill-side q helpers (tolerant equality, shape descriptor, divergence and wrap diagnostics) live with the skill at `.claude/skills/qsql-coder/eval_describe.q` and `.claude/skills/qsql-coder/eval_compare.q`. They are NOT imported by anything in `mcp_server/` (which has its own independent copy of the subset it needs — `mcp_server/eval_compare.q`, see "Files" above); the skill `cat`s its own copies into ad-hoc verify scripts. The two `eval_compare.q` files have also **diverged in semantics**, not only in location — the skill's is the more tolerant of the two.
 - `mcp_qsql_shared.extract.extract_qsql` — pull q code from model output (fenced-block → heuristic → fallback).
 - `mcp_qsql_shared.constants.SYSTEM_PROMPT` — same prompt used at training time.
 
@@ -354,14 +369,17 @@ back here, so add a new variable here first.
 ## Customer-facing skill
 
 `.claude/skills/qsql-coder/SKILL.md` is the user-facing UX
-layer. Customers type `/qsql-coder` (or autocomplete `/q`),
-the skill body orchestrates a single MCP call, then presents the
-drafted q_code + verdict + optional idiom note. The skill conditionally
+layer. Customers type `/qsql-coder` (or autocomplete `/q`), or let the
+primary model route there off the request's wording; either way the skill
+body orchestrates a single MCP call, then presents the drafted q_code +
+verdict + optional idiom note. The skill conditionally
 Bash-verifies the draft against an independent reference when (a) the q uses
 a high-risk named idiom (`wavg`, `mavg`, `fby`, `xexp`, etc. — easy to
-over-apply), (b) the functional form `![...]` / `?[...]` is used, or
-(c) `winning_cluster_fraction < 1.0` or `tie_occurred=true` (candidates
-disagreed — qwen was uncertain). Execution + clustering covers "does it
+over-apply), (b) the functional form `![...]` / `?[...]` is used,
+(c) `winning_cluster_fraction < 0.6` or `tie_occurred=true` (candidates split
+— qwen was uncertain; the tie clause is redundant above `0.5` and kept
+deliberately, see the SKILL.md note), or (d) the user supplied a q snippet or
+formula to check against. Execution + clustering covers "does it
 run, and do independent samples agree"; the skill's Bash-verify covers
 "does it match the intended answer" (catches the semantic-misapplication
 class that agreement alone cannot detect without a reference). On

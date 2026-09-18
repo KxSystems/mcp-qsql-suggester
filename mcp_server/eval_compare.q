@@ -17,6 +17,19 @@
 / diagnostics, not used to decide cluster membership).
 / NOTE: do NOT add a bare `/` line — q treats it as the start of a
 / block comment that runs until a bare `\` line.
+/ THE SKILL COPY HAS DIVERGED ON PURPOSE. It normalizes temporal
+/ resolution: two columns on the same chain (p/z/t/v/u, or p/z/d/m) are
+/ compared after casting the finer down to the coarser, so a `u`
+/ minute-of-day bucket and a `p` timestamp bucket count as equal. That
+/ belongs there and NOT here. Clustering asks "did independent samples
+/ agree?" — two candidates returning different types genuinely did not,
+/ and keeping them in separate clusters is what holds
+/ winning_cluster_fraction below the skill's Bash-verify trigger so the
+/ difference gets looked at. Bash-verify asks the different question
+/ "does qwen's result match my reference's intent?", where the same
+/ difference is presentation. Porting .eval.tNorm into this file would
+/ merge those clusters, remove the trigger, and let the shortest-code
+/ pick return the coarser form with nothing said to the user.
 
 .eval.fmtCols:{[x] c:cols x; t:exec t from meta x; ", " sv {(string x),"(",y,")"} ./: flip (c;t)};
 

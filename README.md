@@ -41,7 +41,10 @@ behind it and where the tasks came from are in
 **What it does not show is semantic correctness.** `passed=true` means "ran
 without raising, and independent samples agreed", never "matches what you asked
 for" — see [`mcp_server/README.md`](mcp_server/README.md) for why closing that
-gap is the caller's job, and why this server is opt-in rather than auto-routed.
+gap is the caller's job, and why the `generate_qsql` *tool* is opt-in rather
+than auto-routed. The two `/qsql-coder` skills are the opposite — they carry
+that caller-side step, so Claude reaches for them on its own; see
+[Using the skills](#using-the-skills).
 
 ## What is and is not in this release
 
@@ -157,8 +160,11 @@ machine never runs the server. Two things, plus one conditional third:
   and compares, which is the whole reason it catches errors the server
   cannot (§ [What the self-consistency pipeline buys
   you](#what-the-self-consistency-pipeline-buys-you)). So it needs a working
-  q, not just a reachable server. `/qsql-coder-quick` never invokes q, so it
-  works without any of that.
+  q, not just a reachable server. Without it `/qsql-coder` still answers —
+  it degrades to presenting the draft unverified, and its verdict line says
+  *"Not verified — `q` is not on PATH"* rather than implying nothing needed
+  checking. `/qsql-coder-quick` never invokes q, so it works without any of
+  that.
 
 No pykx, no qlint, no GPU and no checkpoint either way — those are the
 server's problem, not yours.
@@ -173,8 +179,9 @@ URL, the whole flow is four steps:
    § [Point your client at your server](#point-your-client-at-your-server).
    If they told you to forward a port over SSH, do that first and the URL
    stays `http://localhost:9000/mcp`.
-3. Restart your client and confirm `/mcp` lists `kxqsql`. Nothing warns you
-   if you skip the file — the server never reads it.
+3. Restart your client and confirm `/mcp` lists `kxqsql`. The server never
+   reads that file, so it cannot warn you; the skills do, by stopping with a
+   message rather than answering with q of their own.
 4. Ask for a draft with `/qsql-coder-quick` —
    § [A first run](#a-first-run) has a task worth copying, and explains
    what its verdict line does and does not claim.
@@ -188,10 +195,28 @@ of this repo and lets you exercise the server with no MCP client at all.
 
 Two Claude Code skills drive the server: `/qsql-coder`, which Bash-verifies
 qwen's draft against an independently-derived reference, and
-`/qsql-coder-quick`, which presents the draft directly. Both are opt-in — the
-tool description deliberately discourages the primary model from routing to
-this server on its own, for the reason in
-[`CLAUDE.md`](CLAUDE.md) § "Design stance: opt-in by design".
+`/qsql-coder-quick`, which presents the draft directly.
+
+**You do not have to name either one.** Describe the query you want and Claude
+routes to one of them on its own whenever the request looks like finance qSQL —
+a single table query over market or trading data. Typing `/qsql-coder` or
+`/qsql-coder-quick` is how you *override* that choice, not how you reach the
+skills.
+
+Which one it picks turns on two properties of the request. As-of or
+time-window semantics ("the prevailing quote at each trade", "1-minute bars",
+"rolling 20-day"), or a formula / q snippet / worked example to check the
+draft against, send it to `/qsql-coder`; anything simpler goes to
+`/qsql-coder-quick`. That routing reads your wording, so it is best-effort
+rather than a guarantee — name `/qsql-coder` explicitly when you want the
+verified path for certain.
+
+The **MCP tool description** is a separate thing and stays deliberately
+opt-in: it discourages the primary model from calling `generate_qsql`
+directly and skipping the skills, for the reason in [`CLAUDE.md`](CLAUDE.md)
+§ "Design stance: opt-in by design". Auto-invoking a *skill* does not
+re-open that gap — the skills are where the caller-side verification that
+stance is about actually lives.
 
 ### Installing them as a plugin
 
@@ -254,10 +279,17 @@ the example is a separate tracked file rather than a ready-to-use
 
 Restart your MCP client afterwards (the file is read once at startup), then
 confirm the registration — in Claude Code, `/mcp` should list `kxqsql`. That
-check is worth doing, because a missing `.mcp.json` produces no error at
-all: it is read by the client and never by the server, so the server boots,
-`/health` returns `ok`, and the tool simply does not exist on the client
-side.
+check is worth doing, because nothing on the server side can flag the
+omission: the file is read by the client and never by the server, so the
+server boots, `/health` returns `ok`, and the tool simply does not exist on
+the client side.
+
+Keeping that file correct is yours to do — the plugin cannot supply it (§
+[Installing them as a plugin](#installing-them-as-a-plugin) says why). If a
+skill fires without `kxqsql` registered, it stops and tells you so; it will
+not quietly fall back to writing q itself, because then you would have no way
+to tell which model answered. Adding the file mid-session does not help
+either — restart, since it is read once at startup.
 
 ### A first run
 
@@ -273,6 +305,13 @@ Task: Compute 5-minute OHLCV bars from tick data. Table `trade`
 bucket start, as a timestamp), sym, open (first price), high (max
 price), low (min price), close (last price), volume (sum size).
 ```
+
+The leading `/qsql-coder-quick` is shown to make the example reproducible;
+drop it and paste the `Task:` block on its own and Claude routes there anyway —
+this request has no as-of or time-window semantics and no reference to check
+against. Name the skill when you want a specific one for certain: `/qsql-coder`
+to force the verified path on a request that would otherwise route to quick
+mode, `/qsql-coder-quick` to skip Bash-verify on one that would not.
 
 Naming the table's columns and q type characters is not optional garnish —
 `table_schemas` is a required argument, because the model was trained with
@@ -305,13 +344,12 @@ A real run of exactly the above returned:
 > select open:first price, high:max price, low:min price, close:last price, volume:sum size by bucket:0D00:05 xbar time, sym from trade
 > ```
 >
-> **Verdict**: passed=true, 4/4 candidates agreed (round 1). No verification
-> triggered (no high-risk idiom, no functional form, unanimous self-consistency
-> cluster, no user-supplied reference).
+> **Verdict**: passed=true, 4/4 candidates agreed (round 1). Not verified —
+> quick mode does not verify against a reference.
 >
-> **Idiom note**: Quick mode — no Bash-verify against a reference. Treat
-> `passed=true` as 'ran without raising', not 'matches intended semantics'. For
-> a verified draft, use `/qsql-coder`.
+> **Idiom note**: Treat `passed=true` as 'ran without raising on the dummy
+> table', not 'matches intended semantics'. For a draft verified against an
+> independent reference, use `/qsql-coder`.
 
 That verdict line is the part worth reading. All four candidates in the first
 round landed in one cluster, which clears the early-finalize threshold for a
@@ -430,7 +468,7 @@ QLINT_DIR=<dir> PYTHONPATH=. python -m mcp_server.protocol_test
 │   ├── loop.py            — async run_generate_loop (qwen n= sampling → self-consistency clustering)
 │   ├── self_consistency.py — clustering engine: dedupe, union-find over cross-seed equivalence, winning cluster + round thresholds
 │   ├── qexec.py           — execution primitives (pykx + dummy tables, multi-seed exec+capture, degenerate check, global cleanup)
-│   ├── eval_compare.q     — mcp_server's own .eval.cmp / .eval.eqEps / .eval.descVal / .eval.fmtCols (standalone copy, not shared with the skill)
+│   ├── eval_compare.q     — mcp_server's own .eval.cmp / .eval.eqEps / .eval.descVal / .eval.fmtCols (standalone copy, and deliberately STRICTER than the skill's: see either file's header)
 │   ├── vllm_client.py     — async httpx client to vLLM /v1/chat/completions (chat(..., n=...) for multi-sample requests)
 │   ├── type_gen.q         — server-side typeGen / parseSchema0 / genTable0 (self-consistency exec + pre-derive)
 │   ├── type_gen.py        — thin loader exposing TYPE_GEN_STMTS = ["\\l type_gen.q"]
@@ -466,7 +504,7 @@ QLINT_DIR=<dir> PYTHONPATH=. python -m mcp_server.protocol_test
     │   ├── pre-derive.md      — dev-only A/B-test protocol (expected-schema hint); not auto-loaded
     │   ├── verify_gen.q       — verify-tuned dummy generator (1000 rows / 3 syms / 2h span) for Bash-verify reference compare
     │   ├── eval_describe.q    — .eval.fmtCols / .eval.descVal (single-value shape introspection; shared with pre-derive)
-    │   ├── eval_compare.q     — .eval.cmp / .eval.flatNumeric / .eval.diag (two-value tolerant compare + divergence diagnostic)
+    │   ├── eval_compare.q     — .eval.cmp / .eval.eqEps / .eval.tNorm / .eval.flatNumeric / .eval.diag / .eval.wrapInfo (tolerant compare incl. temporal-resolution normalization, + divergence and wrap diagnostics)
     │   └── scripts/
     │       └── format_output.py — Markdown renderer; single source of truth, used by both skills
     └── qsql-coder-quick/

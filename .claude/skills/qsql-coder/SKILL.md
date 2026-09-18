@@ -1,6 +1,6 @@
 ---
 name: qsql-coder
-description: Draft qSQL code via the fine-tuned qwen specialist (kxqsql MCP) with parse + KX qlint + runtime-exec gates against a dummy table. Use when the user says "qsql idiom", "draft qsql via qwen", "use the qsql specialist", or invokes /qsql-coder. Opt-in only — do not auto-invoke on every qSQL question.
+description: Draft one finance qSQL statement via the fine-tuned qwen specialist (kxqsql MCP) — parse + KX qlint C9 + multi-seed execution against a dummy table, then Bash-verified against an independently derived reference. Use whenever the task is to write or fix a single kdb+/q table query over market or trading data (trade, quote, order-book, execution tables; VWAP, TWAP, PnL, spread, returns) AND either the request carries as-of or time-window semantics ("as of", "prevailing quote", "the quote in effect at each trade", "per 5 minutes", "1-minute bars", "OHLC", "rolling 20-day", "moving average", "cumulative") or the request supplies a formula, a q snippet, or a worked example to check against. For finance qSQL with none of those — one table, one filter or one aggregate — use qsql-coder-quick instead. Do NOT use for non-finance data, for generic q (IPC, .z handlers, file I/O, system commands, admin scripts), or for multi-step workflows.
 user-invocable: true
 ---
 
@@ -16,6 +16,37 @@ equivalence — returning the shortest-code candidate from the largest
 (winning) cluster. Present the drafted q code, the verdict, and an
 optional one-sentence idiom note.
 
+## Preconditions — check both before anything else
+
+### The `kxqsql` MCP tool must exist
+
+If `mcp__kxqsql__generate_qsql` is not among your available tools, the server
+is not registered for this project. **Stop and report — do not work around
+it.** Three specific non-workarounds, because each is tempting: do not attempt
+the call anyway (a call to a tool that does not exist yields a harness error
+that says nothing about the cause), do not substitute q you wrote yourself (a
+silent substitution hides which model answered, and this skill's whole output
+contract is about the specialist's draft), and do not run the formatter (no
+case describes this situation — the "do not hand-render" rule governs
+formatter *output*, not a pre-flight abort). Reply in plain text:
+
+> The `kxqsql` MCP server is not registered in this project, so I cannot reach
+> the qSQL specialist. Add it to a project-scope `.mcp.json` — see the
+> `mcp-qsql-suggester` README § "Point your client at your server" — and then
+> **restart Claude Code**: MCP config is read once at startup, so editing
+> `.mcp.json` mid-session has no effect.
+
+Then stop. This is the one path that produces no formatter output at all.
+
+### Only one of the two skills runs per instruction
+
+`qsql-coder` and `qsql-coder-quick` call the same MCP tool with the same
+arguments, so running both samples the model twice for one question. If
+`qsql-coder-quick` has already run on this instruction in this conversation,
+do **not** run: its draft stands. If you now think the task warranted full
+mode's Bash-verify after all, say that in one line and let the user ask for
+it — do not re-run on your own.
+
 ## Gather parameters
 
 | Param | Type | Required | Default | Notes |
@@ -27,6 +58,32 @@ optional one-sentence idiom note.
 If `instruction` is missing or vague, ask the user.
 
 ### When the user did NOT provide a schema
+
+**Step 0 — look for the real schema before drafting one.** An invented schema
+is the quiet failure mode. The column names will match (you wrote both), so
+the candidates run and agree — but on a dummy table whose types and value
+ranges need not resemble the user's data, which is exactly the input a
+semantic defect hides in. A wrong *name* fails loudly (`passed=false`); a
+wrong *type or distribution* fails silently. So spend one search first:
+
+1. Anything the user already pasted in this conversation — `meta` output, a
+   `([] ...)` table definition, a DDL snippet — is authoritative. Use it and
+   skip the rest.
+2. Otherwise search the project for a definition of each table the
+   instruction names:
+
+   ```bash
+   grep -rnE '^[[:space:]]*(trade|quote)[[:space:]]*:[[:space:]]*\(\[' \
+       --include='*.q' --include='*.k' . | head -20
+   ```
+
+   Substitute the actual table names. Also worth a look: any schema or loader
+   `.q` file, and `meta` / `cols` output checked into the repo.
+3. Only if that finds nothing, fall through to the options below.
+
+Whichever route produced the schema — found or drafted — it still reaches the
+user in the `Schemas used` block, so a wrong guess is visible in the output
+rather than buried in the call.
 
 The MCP tool rejects calls without `table_schemas`, so you cannot
 silently call it with an empty schema. Do NOT silently infer a schema
@@ -85,9 +142,42 @@ intent has to be checked separately by Bash-verify against a reference
 |---|---|
 | Uses a **high-risk named idiom**: `wavg`, `wsum`, `mavg`, `msum`, `mmax`/`mmin`/`mcount`/`mdev`/`mmedian`, `fby`, `xexp`, `prds`, `sums`/`sum` mixed with `wavg`-family | **Bash-verify** (these idioms condense multiple ops into one call; easy for qwen to over-apply or combine with redundant arithmetic) |
 | Functional form `![...]` or `?[...]` with nested parse-tree aggregates | **Bash-verify** (parse-tree composition is fragile) |
-| `winning_cluster_fraction < 1.0` (not every candidate agreed) or `tie_occurred=true` | **Bash-verify** — qwen was uncertain / split across answers, verify against an independent reference |
+| `winning_cluster_fraction < 0.6` (weak majority — the winning cluster carries under 60% of the candidates generated) or `tie_occurred=true` | **Bash-verify** — qwen was split across answers, so verify against an independent reference. `0.6` rather than `1.0`: a lone dissenter out of 8 is normal sampling noise at temperature 0.8, not a signal, and verifying every one of those spends a q process on nothing |
 | **User provided a q snippet / canonical form / formula** in the prompt | **Bash-verify** — even when no other trigger fires. The priority-1 reference is free (no need to draft), and catching divergence is high-value. A reference you don't use is a reference wasted. |
 | None of the above | **Trust the gate.** No verification needed. Present q_code + verdict directly. |
+
+`tie_occurred=true` is **redundant while that threshold stays above 0.5**, and
+deliberately kept. A tie means two or more clusters share the top weight, and
+clusters are disjoint, so the winner holds at most half the total weight —
+`winning_cluster_fraction` is `winning_cluster_size / candidates_generated`
+(`mcp_server/loop.py`), whose denominator also counts candidates excluded from
+clustering, so the real fraction is at most `0.5` and usually lower. Any
+threshold above `0.5` therefore fires on every tie by itself. It is kept
+because it costs nothing, states the intent independently of the number, and
+becomes load-bearing again the moment somebody tunes the threshold to `0.5` or
+below.
+
+**Once a row has fired, confirm `q` is reachable before acting on it.**
+Nothing in the table above can tell you whether this project has a working q —
+the MCP runs its own embedded q on the server side, which says nothing about
+your side. Check **lazily**, only after a trigger fires, so the common case-A
+path costs no extra Bash call:
+
+```bash
+q --version 2>&1 | head -2
+```
+
+If that fails — no `q` on PATH, no licence, non-zero exit — Bash-verify is not
+available and this becomes an honest case A rather than a silent one. Render
+case A with `"verification_unavailable": "no_q"`. Do **not** just fall through
+to the "None of the above" row: that prints a reason list beginning *"no
+high-risk idiom"*, which is false about code that has one. With the field set
+the verdict reads *"Not verified — `q` is not on PATH, so Bash-verify could
+not run"* instead.
+
+Without q this skill's output is `qsql-coder-quick`'s output plus an accurate
+label. That is a degradation, not an error: mention `/qsql-coder-quick` only
+if the user asks why nothing was verified.
 
 ### When `passed=false` — Opus rewrites, then Bash-verifies
 
@@ -111,6 +201,15 @@ failed. Do not ship qwen's broken draft as the answer.
 2. **Bash-verify your version** against a dummy table matching the
    schema. Check it executes without error and the output shape looks
    reasonable (correct columns, correct row count given the grouping).
+**If `q` is not reachable** (the same check as above), steps 1 and 2 are not
+available to you: you could write a version but not verify it, and this skill
+does not present unverified q as an answer. Render case D with
+`opus_could_write=false` **and** `"verification_unavailable": "no_q"`. The
+second field is what keeps the verdict honest — without it case D reports
+*"task is outside my q knowledge or the instruction is genuinely ambiguous"*,
+when in fact the instruction may have been perfectly clear and only the
+verification step was missing.
+
 3. Present per outcome:
    - **Your version Bash-verifies cleanly** → present yours as the
      primary answer, with qwen's failed draft + `final_issues` shown as
@@ -194,7 +293,7 @@ in play" (generic); qualifiers like *user-provided* / *priority-1* /
 
 Compare results (not code) against the same dummy data. **Write the q
 to a temp file (`/tmp/verify_*.q`) and run
-`q /tmp/verify_*.q -q </dev/null`** — do NOT pipe via
+`timeout -k 5 60 q /tmp/verify_*.q -q </dev/null`** — do NOT pipe via
 `echo '...' | q -q` or `q -q <<EOF` heredoc. Reason: q code is full of
 backtick-prefixed symbols (`` `sym ``, `` `time ``, etc.); on many
 shells the backticks inside `echo` / heredoc trigger command
@@ -203,16 +302,30 @@ substitution and get stripped before reaching q, producing
 sidesteps shell quoting entirely. The trailing **`</dev/null`** is
 load-bearing: after running the file, q tries to enter the REPL and
 read from stdin; without `</dev/null` (and without a trailing
-`exit 0;` in the script), q hangs waiting for input until the Bash
-tool's 2-min timeout fires. Don't use `q -q < /tmp/verify_*.q`
+`exit 0;` in the script), q hangs waiting for input until the
+`timeout` above fires. Don't use `q -q < /tmp/verify_*.q`
 (stdin-redirect, no file arg) either — that mode parses each line as a
 top-level expression and breaks multi-line function definitions.
+
+The leading **`timeout -k 5 60`** is load-bearing too, and it is the
+only thing that works. A candidate or reference that never returns —
+`while[1b;...]`, or a join that goes quadratic on the 1000-row dummy —
+pins a core at 100% until something kills it, and nothing else on this
+path does: q's `-T` (command line or `system "T"`) bounds IPC client
+queries only, not a script file it is running; a q spinning in a tight
+loop does not act on SIGTERM at all, which is what a plain `timeout`
+sends; and the Bash tool does not kill a command that hits its 2-min
+limit, it moves it to the background and leaves it running. All three
+were measured. `-k 5` follows the SIGTERM with SIGKILL five seconds
+later, which q cannot ignore. `timeout` is GNU coreutils — present on
+every Linux this project supports; on a box without it, drop the prefix
+rather than let the verify fail on `command not found`.
 
 Build `/tmp/verify.q` in two passes: pass 1 concatenates three skill-
 local `.q` files — `verify_gen.q` (gives `NROWS0`, `typeGen`,
 `parseSchema0`, `genTable0`), `eval_describe.q` (`.eval.fmtCols` +
 `.eval.descVal`), `eval_compare.q` (`.eval.cmp` + `.eval.flatNumeric`
-+ `.eval.diag`). Pass 2 appends the call-specific verification via
++ `.eval.diag` + `.eval.wrapInfo`). Pass 2 appends the call-specific verification via
 single-quoted heredoc so the backticks in q syms survive shell
 quoting.
 
@@ -248,9 +361,10 @@ strict: qwen_result ~ reference_result;
 soft:   .eval.cmp[qwen_result; reference_result];
 show `strict`soft!(strict; soft);        / 11b = clean match; 01b = shape-wrap only; 00b = real divergence
 if[(not strict) and not soft; .eval.diag[qwen_result; reference_result]];
+if[(not strict) and soft; .eval.wrapInfo[qwen_result; reference_result]];
 exit 0;
 PYEOF
-q /tmp/verify.q -q </dev/null
+timeout -k 5 60 q /tmp/verify.q -q </dev/null
 ```
 
 The two-pass split is deliberate: pass 1 needs `$SKILL_ROOT`
@@ -262,7 +376,7 @@ substitution. The `{ cat; cat; cat; } > file` pattern sidesteps both.
 After pass 2, `/tmp/verify.q` is a single q script that q parses
 end-to-end; semantically identical to using `\l` plus inline code.
 
-Note: load order matters — `.eval.diag` (in `eval_compare.q`) calls
+Note: load order matters — `.eval.diag` / `.eval.wrapInfo` (in `eval_compare.q`) call
 `.eval.descVal` (in `eval_describe.q`), so `eval_describe.q` must
 precede `eval_compare.q` in the `cat` sequence above.
 
@@ -283,9 +397,22 @@ two compares answer different questions:
   Strict on column order, keyed-vs-unkeyed wrap, type spelling.
 - **`soft` = `.eval.cmp[qwen_result; reference_result]`** — tolerant
   equality from `eval_compare.q`. Treats column reorder, the
-  keyed/unkeyed wrap, and renamed-but-positionally-identical columns
-  as equivalent. Implements the relation: same values, possibly
-  different presentation.
+  keyed/unkeyed wrap, renamed-but-positionally-identical columns, and
+  **temporal columns that differ only in resolution** as equivalent.
+  Implements the relation: same values, possibly different presentation.
+
+  The temporal axis is the newest and the least obvious, so: two columns
+  on the same resolution chain (`p`/`z`/`t`/`v`/`u`, or `p`/`z`/`d`/`m`)
+  are compared after casting the finer down to the coarser, which makes
+  a `u` minute-of-day bucket equal to the `p` timestamp bucket covering
+  the same minute. Different chains (`d` vs `u`) and `n` (a duration,
+  not a point in time) stay unequal. The coarser answer therefore wins
+  the comparison — accepted deliberately, because on the dummy table
+  `p` is single-day by construction and the defect this might hide
+  (`5 xbar time.minute` merging rows across days) changes the row count
+  and the aggregates, which are rejected on their own. `eval_compare.q`
+  has the full argument; note that **`mcp_server`'s copy deliberately
+  does not do this** — clustering wants the disagreement.
 
 Three meaningful outcomes (the fourth, `strict=1b, soft=0b`, is
 impossible — strict implies soft):
@@ -293,7 +420,7 @@ impossible — strict implies soft):
 | `strict` | `soft` | meaning | classify as |
 |---|---|---|---|
 | `1b` | `1b` | clean match, identical bytes | **Case B** (no idiom note) |
-| `0b` | `1b` | values agree but wrap differs (col reorder / keyed wrap / col rename) | **Case B + idiom note** explaining the wrap difference |
+| `0b` | `1b` | values agree but wrap differs (col reorder / keyed wrap / col rename / temporal resolution) | **Case B + idiom note** explaining the wrap difference — `.eval.wrapInfo` fires automatically |
 | `0b` | `0b` | real semantic divergence | **Case C** — `.eval.diag` fires automatically |
 
 `.eval.diag` only fires on the third outcome (both `0b`). It prints
@@ -306,10 +433,32 @@ diag output to write `divergence_symptom` in the case-C JSON payload
 When `strict=0b, soft=1b`, the values match but the presentation
 differs. This is **not** a Case C, but it is worth a one-line
 `idiom_note` because the user may have expected a specific wrap (e.g.
-keyed table when they ran `select ... by sym`). Inspect both results
-manually to identify which axis differs (col order, key/unkey, col
-name), then write the idiom note. Diag does NOT run in this branch;
-its job is divergence diagnosis, not wrap diagnosis.
+keyed table when they ran `select ... by sym`).
+
+**`.eval.wrapInfo` fires automatically in this branch** — read the axis
+off its output rather than improvising an inspection. It prints `meta`
+of both results, which names three of the four axes directly: column
+order (the row order of the `meta`), column names, and the `t` column
+for temporal resolution. The fourth, keyed-vs-unkeyed, is visible in
+`meta`'s key marking and in the results themselves. Non-table results fall back to
+`.eval.descVal`, because `meta` raises `'type` on them — and B-wrap is
+genuinely reachable for bare atoms (`1.0` vs `1.0000000001`, `1` vs
+`1f`, `09:05` vs a `p`).
+
+Do not guess an axis you cannot point at: a B-wrap `idiom_note` is
+**required**, and that requirement is exactly the pressure that produces
+an invented explanation when the axis is not in front of you.
+
+Diag does NOT run in this branch; its job is divergence diagnosis, not
+wrap diagnosis.
+
+For the temporal axis specifically, the note should say what the two
+types are and name the one thing that decides which the user wants —
+e.g. *"qwen's `bucket` is a `u` (minute-of-day); the reference's is a
+`p` (timestamp). Same buckets on single-day data; if `trade` spans more
+than one day you want the `p` form, since `u` merges the same
+time-of-day across dates."* That is a question about the user's data,
+which is why it belongs in a note and not in a verdict downgrade.
 
 **Divergence = same input, different output.** Both qwen and the
 reference must run on **identical dummy input** in the same .q file. If they
@@ -344,8 +493,8 @@ Then pick the case from the MCP return + your verify outcome:
 
 | case | when |
 |---|---|
-| **A** | `passed=true`; no Bash-verify triggered (no high-risk idiom, no functional form, unanimous self-consistency cluster, no user reference) |
-| **B** | `passed=true`; Bash-verified; **`soft=1b`** (qwen's values match the reference). Two sub-cases:<br>• **B-clean** — `strict=1b`: identical bytes; `idiom_note` optional.<br>• **B-wrap** — `strict=0b, soft=1b`: values agree but col-order / keyed-wrap / col-name differ; `idiom_note` **required** to explain the wrap. |
+| **A** | `passed=true`; no Bash-verify triggered (no high-risk idiom, no functional form, `winning_cluster_fraction >= 0.6` with no tie, no user reference — note this admits a plurality, so case A is no longer proof of unanimity) — **or** a trigger did fire but `q` is unreachable, in which case also set `verification_unavailable: "no_q"` so the verdict does not claim the trigger was absent |
+| **B** | `passed=true`; Bash-verified; **`soft=1b`** (qwen's values match the reference). Two sub-cases:<br>• **B-clean** — `strict=1b`: identical bytes; `idiom_note` optional.<br>• **B-wrap** — `strict=0b, soft=1b`: values agree but col-order / keyed-wrap / col-name / temporal-resolution differ; `idiom_note` **required** to explain the wrap (`.eval.wrapInfo` prints both `meta`s — read the axis off it). |
 | **C** | `passed=true`; Bash-verified; **`strict=0b` AND `soft=0b`** (real divergence). `.eval.diag` ran automatically — read its output to write `divergence_symptom`. |
 | **D** | `passed=false`; no self-consistency cluster survived gating |
 
@@ -408,6 +557,15 @@ python3 "${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}/.claude/skills/
   "opus_could_write": null,       // bool — case D only
   "basis_label": null,            // free text e.g. "the instruction plus schema" — case D1 only
 
+  "verification_unavailable": null,  // null | "no_q" — case A and D only.
+                                  // Replaces the verdict's reason clause when
+                                  // the reference check was IMPOSSIBLE rather
+                                  // than unnecessary. Set it only for the
+                                  // unreachable-q path above; the sibling
+                                  // skill owns the other value ("quick_mode").
+                                  // Rejected on cases B and C, which are the
+                                  // verified cases by definition.
+
   "idiom_note": null              // optional one sentence; null = omit line
 }
 __QSQL_FORMAT_END__
@@ -431,9 +589,15 @@ instruction"*, *"my own independent translation"*.
 |---|---|
 | A | `qwen_code`, `passed=true`, `rounds_used`, `candidates_generated`, `winning_cluster_size`, `lint_gate` |
 | B-clean (`strict=1b`) | + `reference_priority` ∈ {1,2,3}, `reference_source_label`, `verify_shape` |
-| B-wrap (`strict=0b, soft=1b`) | + `reference_priority`, `reference_source_label`, `verify_shape`, **`idiom_note` (required)** — describe the wrap axis (col order / keyed wrap / col name) |
+| B-wrap (`strict=0b, soft=1b`) | + `reference_priority`, `reference_source_label`, `verify_shape`, **`idiom_note` (required)** — describe the wrap axis (col order / keyed wrap / col name / temporal resolution), naming it from the `meta` pair `.eval.wrapInfo` printed |
 | C (both `0b`) | + `reference_priority`, `reference_source_label`, `verify_shape`, `divergence_symptom`, `suggested_code` |
 | D | + `final_issues` (list), `opus_could_write` (bool); if `opus_could_write=true`: + `suggested_code`, `basis_label` |
+
+`verification_unavailable` is required on **either** case whenever a
+Bash-verify trigger fired and `q` was unreachable — case A because its reason
+list would otherwise deny the trigger, case D because its fallback sentence
+would otherwise blame the instruction. It is optional (and meaningless)
+anywhere else.
 
 ### Locked rule: `suggested_code` must be verbatim verified code
 
