@@ -130,6 +130,7 @@ DRAFT_BOUNDARY = "# END OF DRAFT-ONLY SECTION"
 FACTS_NAME_FMT = "release_facts_{checkpoint}.json"
 
 DEFAULT_MAX_SHARD_BYTES = 5 * 1000**3  # 5 GB, the convention on the Hub
+MANIFEST_NAME = "SHA256SUMS"  # coreutils name, so `sha256sum -c` just works
 
 # Markers that must not survive into a published README.md or NOTICE. Kept as an
 # explicit list rather than a general "angle brackets" rule, because prose
@@ -152,6 +153,12 @@ PLACEHOLDER_TOKENS = (
 # --- output helpers ---------------------------------------------------------
 
 _PROBLEMS: list[str] = []
+# Warnings are COUNTED, not just printed. Several of them mean "this check did
+# not run" — jinja2 or transformers not importable in this interpreter, for
+# instance — and a run that silently skipped a check must not sign off with a
+# flat "all checks passed". That is how a gate stays dead for months while
+# reporting success.
+_WARNINGS: list[str] = []
 
 
 def info(msg: str) -> None:
@@ -167,6 +174,8 @@ def ok(msg: str) -> None:
 
 
 def warn(msg: str) -> None:
+    """Something to look at, including a check that could not run at all."""
+    _WARNINGS.append(msg)
     print(f"  WARN  {msg}")
 
 
@@ -900,6 +909,50 @@ def _deep_compare(ckpt: Path, out: Path, shards: list[str]) -> None:
            f"{nbytes} bytes ({human(nbytes)}) verified")
 
 
+def _manifest_entries(out: Path) -> list[tuple[str, str]]:
+    """(sha256, name) for every file in the release dir except the manifest."""
+    names = sorted(f.name for f in out.iterdir()
+                   if f.is_file() and f.name != MANIFEST_NAME)
+    entries = []
+    for n in names:
+        h = hashlib.sha256()
+        with open(out / n, "rb") as fh:
+            for chunk in iter(lambda: fh.read(8 * 1024 * 1024), b""):
+                h.update(chunk)
+        entries.append((h.hexdigest(), n))
+    return entries
+
+
+def manifest(out: Path) -> None:
+    """Write SHA256SUMS over the finished release directory.
+
+    A downloader's first question is "did I get the bytes you meant", and the
+    answer should not require them to trust the transport they just used. Some
+    hosts publish a per-object checksum of their own, but checking a download
+    against a checksum from the same host is circular: it catches corruption in
+    storage or transit and nothing else. A manifest that travels with the files
+    — and better, is also quoted out of band, in the release notes or the mail
+    that hands them over — is what makes the check independent of the channel.
+
+    Runs AFTER reshard, since the shards it hashes do not exist before that.
+    Reading a directory rather than remembering what earlier stages wrote is
+    deliberate: it cannot disagree with what is actually there.
+
+    The manifest cannot cover itself, so it is excluded. That is the usual
+    convention and the reason the out-of-band copy still matters.
+    """
+    head(f"manifest: {MANIFEST_NAME} over the release directory")
+    entries = _manifest_entries(out)
+    if not entries:
+        fail(f"nothing to hash in {out}")
+        return
+    body = "".join(f"{h}  {n}\n" for h, n in entries)
+    (out / MANIFEST_NAME).write_text(body)
+    total = sum((out / n).stat().st_size for _, n in entries)
+    ok(f"{MANIFEST_NAME}: {len(entries)} file(s), {total:,} bytes hashed")
+    info(f"a downloader checks it with: cd <dir> && sha256sum -c {MANIFEST_NAME}")
+
+
 def verify(ckpt: Path, out: Path, deep: bool = False) -> None:
     """Check the release directory as a downloader would receive it.
 
@@ -908,6 +961,41 @@ def verify(ckpt: Path, out: Path, deep: bool = False) -> None:
     gets skipped. `deep` adds the content-level compare — see the design note
     at the top for why that one is opt-in rather than absent.
     """
+    head(f"verify: {MANIFEST_NAME}")
+    man = out / MANIFEST_NAME
+    if not man.is_file():
+        info(f"no {MANIFEST_NAME} — the manifest stage has not run against "
+             "this directory")
+    else:
+        listed = {}
+        for ln in man.read_text().splitlines():
+            if not ln.strip():
+                continue
+            h, _, n = ln.partition("  ")
+            listed[n] = h
+        present = {f.name for f in out.iterdir()
+                   if f.is_file() and f.name != MANIFEST_NAME}
+        # The cheap half: a manifest that does not name exactly the files that
+        # are there is stale, and that is the way it actually goes wrong — a
+        # file added or removed after it was written. Catching it costs a
+        # readdir rather than 17 GB of hashing.
+        if set(listed) != present:
+            missing = sorted(present - set(listed))
+            extra = sorted(set(listed) - present)
+            fail(f"{MANIFEST_NAME} is stale: {len(missing)} unlisted file(s) "
+                 f"{missing[:3]}, {len(extra)} listed but absent {extra[:3]}")
+        elif not deep:
+            ok(f"{MANIFEST_NAME} lists exactly the {len(listed)} file(s) "
+               "present (pass --deep to re-hash them)")
+        else:
+            bad = [n for h, n in _manifest_entries(out) if listed[n] != h]
+            if bad:
+                fail(f"{MANIFEST_NAME}: {len(bad)} checksum mismatch(es), "
+                     f"e.g. {bad[:3]}")
+            else:
+                ok(f"{MANIFEST_NAME}: {len(listed)} file(s) re-hashed and all "
+                   "match")
+
     head("verify: shards against the source checkpoint")
     index = out / f"{WEIGHTS_FILE}.index.json"
     if not index.is_file():
@@ -1103,9 +1191,16 @@ def main() -> int:
         description=__doc__.split("\n")[0],
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("stage",
-                    choices=["inspect", "stage", "reshard", "verify", "all"])
-    ap.add_argument("--checkpoint", required=True, type=Path,
-                    help="merged, unwrapped checkpoint directory (read-only)")
+                    choices=["inspect", "stage", "reshard", "manifest",
+                             "verify", "all"])
+    # Not required for `manifest`, which reads only --out. Forcing a checkpoint
+    # path on a stage that ignores it invites someone to pass any directory to
+    # satisfy argparse — and then the --out/--checkpoint guard below fires on
+    # the natural thing to try (pointing both at the release dir), which reads
+    # as a refusal to do something harmless.
+    ap.add_argument("--checkpoint", type=Path,
+                    help="merged, unwrapped checkpoint directory (read-only). "
+                         "Required by every stage except `manifest`")
     ap.add_argument("--out", type=Path,
                     help="release directory to create (required except for inspect)")
     ap.add_argument("--max-shard-size", type=int, default=DEFAULT_MAX_SHARD_BYTES,
@@ -1131,17 +1226,24 @@ def main() -> int:
                          "checkpoint; run it on the one you are publishing)")
     args = ap.parse_args()
 
-    ckpt: Path = args.checkpoint.expanduser().resolve()
-    if not ckpt.is_dir():
-        return f"not a directory: {ckpt}"  # type: ignore[return-value]
+    # Argument checks come BEFORE resolving the paths, so a missing one is an
+    # argparse error naming the flag rather than an AttributeError on None.
+    if args.stage != "manifest" and not args.checkpoint:
+        ap.error("--checkpoint is required for this stage")
     if args.stage != "inspect" and not args.out:
         ap.error("--out is required for this stage")
+
+    ckpt: Path | None = (args.checkpoint.expanduser().resolve()
+                         if args.checkpoint else None)
+    if ckpt is not None and not ckpt.is_dir():
+        return f"not a directory: {ckpt}"  # type: ignore[return-value]
     out = args.out.expanduser().resolve() if args.out else None
-    if out and out == ckpt:
+    if out and ckpt and out == ckpt:
         ap.error("--out must differ from --checkpoint: this script never writes "
                  "to the source checkpoint")
 
-    print(f"checkpoint : {ckpt}")
+    if ckpt:
+        print(f"checkpoint : {ckpt}")
     if out:
         print(f"out        : {out}")
 
@@ -1159,6 +1261,10 @@ def main() -> int:
               licence=args.licence.expanduser() if args.licence else None)
     if args.stage in ("reshard", "all") and not _PROBLEMS:
         reshard(ckpt, out, args.max_shard_size, args.yes)  # type: ignore[arg-type]
+    # After reshard (the shards must exist) and before verify (which checks
+    # the manifest it wrote).
+    if args.stage in ("manifest", "all") and not _PROBLEMS:
+        manifest(out)  # type: ignore[arg-type]
     if args.stage in ("verify", "all") and not _PROBLEMS:
         verify(ckpt, out, deep=args.deep)  # type: ignore[arg-type]
 
@@ -1168,7 +1274,14 @@ def main() -> int:
         for p in _PROBLEMS:
             print(f"  - {p}")
         return 1
-    print("all checks passed")
+    if _WARNINGS:
+        print(f"all checks passed, but {len(_WARNINGS)} WARNING(S) — a warning "
+              "can mean a check did not run:")
+        for w in _WARNINGS:
+            print(f"  - {w}")
+        print("Read them before treating this as a clean release.")
+    else:
+        print("all checks passed")
     return 0
 
 
