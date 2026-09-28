@@ -70,8 +70,10 @@ transformers, which will fight with pykx and `mcp` if installed together.
 - **Working GPU driver + CUDA.** `nvidia-smi` must work. Installing these is
   distro- and card-specific and out of scope here.
 - **~30 GB free disk**: ~17 GB for the checkpoint, ~8 GB for the vLLM env,
-  plus pip/conda caches. Resharded checkpoints and a second env variant will
-  want more.
+  plus pip/conda caches. Using the Hugging Face repo id (Step 3) puts that
+  17 GB in `~/.cache/huggingface/hub` instead of wherever you place a manual
+  download — doing both costs it twice (~34 GB). Resharded checkpoints and a
+  second env variant will want more.
 
 ### Software and artifacts
 
@@ -83,15 +85,22 @@ transformers, which will fight with pykx and `mcp` if installed together.
 | **KX `qlint.q_`** | *Optional, but recommended.* Part of KX's AxLibraries, inside the KX Developer download ([code.kx.com/developer](https://code.kx.com/developer/), EULA-gated) | Powers the C9 lint gate. KX Analyst ships the same AxLibraries, but Developer is the smaller download and is sufficient. Install steps in [`README.md`](README.md) § Prerequisites; KX's own reference is [code.kx.com/analyst/libraries#download](https://code.kx.com/analyst/libraries/#download). Without it the server still runs with a two-gate stack — optional to keep a first run cheap, not because C9 is a formality; see [`mcp_server/README.md`](mcp_server/README.md) gate 2. |
 | **Python 3.10+** | distro / pyenv / conda | 3.12 is the verified version for both envs. |
 | **conda** (or venv / pyenv) | [docs.conda.io](https://docs.conda.io/) | Examples below use conda; with venv, activate the env and drop the `conda run` prefix. |
-| **The fine-tuned checkpoint** | Not shipped with this repo — see [`README.md`](README.md) § Prerequisites | Must be the **`*_merged_unwrapped/`** safetensors layout. A wrapped checkpoint has multimodal-prefix keys (`model.language_model.X`) that vLLM's text-only loader rejects; see [`mcp_server/VLLM.md`](mcp_server/VLLM.md) § Checkpoint. |
+| **The fine-tuned checkpoint** | [`KxSystems/qsql-qwen35-9b`](https://huggingface.co/KxSystems/qsql-qwen35-9b) on Hugging Face, or your own — not shipped with this repo either way; see [`README.md`](README.md) § Prerequisites | Must be the **`*_merged_unwrapped/`** safetensors layout. A wrapped checkpoint has multimodal-prefix keys (`model.language_model.X`) that vLLM's text-only loader rejects; see [`mcp_server/VLLM.md`](mcp_server/VLLM.md) § Checkpoint. |
 | **This repo** | `git clone <repo url>` | |
 
-## Step 1 — Clone, and put the checkpoint somewhere
+## Step 1 — Clone, and (optionally) fetch the checkpoint
 
 ```bash
 git clone <repo url>
 cd mcp-qsql-suggester
 ```
+
+**Downloading the checkpoint yourself is optional.** `vllm serve` in Step 3
+also accepts a Hugging Face repo id directly —
+`vllm serve KxSystems/qsql-qwen35-9b` resolves it and downloads on first run
+into `~/.cache/huggingface/hub`. If that is fine for you, skip ahead to Step
+2. Keep reading if you want a local copy instead — e.g. your own fine-tune,
+or the files somewhere other than the HF cache.
 
 The checkpoint can live anywhere — vLLM is pointed at it explicitly at
 launch. Confirm it is the unwrapped variant and that its files are readable:
@@ -134,6 +143,10 @@ tmux send-keys -t vllm "CUDA_VISIBLE_DEVICES=<gpu> \
   --gpu-memory-utilization 0.92" Enter
 tmux attach -t vllm      # watch the log; detach with Ctrl-b d
 ```
+
+`<checkpoint>` is either a local directory or a Hugging Face repo id —
+`KxSystems/qsql-qwen35-9b` works here directly (see Step 1). The model
+card has the pinning / `HF_HUB_OFFLINE` details for a reproducible load.
 
 Two flags worth understanding:
 
