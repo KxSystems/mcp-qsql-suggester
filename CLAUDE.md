@@ -17,9 +17,12 @@ shortest-code candidate from the largest (winning) cluster. It exposes
 a single tool, `generate_qsql`, intended for MCP clients that want to
 delegate qSQL drafting to a specialist model.
 
-The model is **not** part of this repo. Users supply their own
-checkpoint and serve it via vLLM. The training pipeline that produced
-the recommended checkpoint is not part of this repo either.
+The model is **not** part of this repo. The recommended checkpoint is
+published at
+[`KxSystems/qsql-qwen35-9b`](https://huggingface.co/KxSystems/qsql-qwen35-9b)
+on Hugging Face; users may also supply their own fine-tune and serve it
+via vLLM. The training pipeline that produced the recommended checkpoint
+is not part of this repo either.
 
 ## Prerequisites
 

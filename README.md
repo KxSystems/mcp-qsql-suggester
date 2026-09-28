@@ -57,11 +57,13 @@ that caller-side step, so Claude reaches for them on its own; see
   this release and there are no plans to publish them, so please do not
   open an issue asking for them — an issue asking for training data will
   be closed with a link to this section.
-- **The model weights themselves**, which are distributed separately;
-  see [Prerequisites](#prerequisites). The server is not tied to them
-  though — [`SELF_HOSTING.md`](SELF_HOSTING.md) § "Using a different model"
-  covers pointing it at any OpenAI-compatible endpoint, and what you give
-  up by doing so.
+- **The model weights themselves**, which are distributed separately —
+  see [Prerequisites](#prerequisites) and
+  [`KxSystems/qsql-qwen35-9b`](https://huggingface.co/KxSystems/qsql-qwen35-9b)
+  on Hugging Face. The server is not tied to them though —
+  [`SELF_HOSTING.md`](SELF_HOSTING.md) § "Using a different model" covers
+  pointing it at any OpenAI-compatible endpoint, and what you give up by
+  doing so.
 - **kdb+/q, pykx and KX's `qlint.q_`**, which are licensed separately.
   Supply your own copies.
 
@@ -141,9 +143,10 @@ to colleagues once your own server is up (see
   [`mcp_server/VLLM.md`](mcp_server/VLLM.md) for the recommended
   launch, unwrapped-checkpoint rationale, GPU constraints, and
   known-broken combos.
-- A **fine-tuned qSQL checkpoint** (e.g.
-  `qsql_qwen35_9b_*_merged_unwrapped/` LoRA artifact) — not shipped
-  with this repo.
+- A **fine-tuned qSQL checkpoint** —
+  [`KxSystems/qsql-qwen35-9b`](https://huggingface.co/KxSystems/qsql-qwen35-9b)
+  on Hugging Face, or your own `qsql_qwen35_9b_*_merged_unwrapped/`
+  fine-tune. Not shipped with this repo either way.
 
 ### Colleagues who only call your server
 
@@ -603,7 +606,9 @@ stays visible to the next person who hits the same thing.
 
 Apache License 2.0 — see [LICENSE](LICENSE).
 
-The model weights are distributed separately under the same licence, and are a
-derivative of [`Qwen/Qwen3.5-9B`](https://huggingface.co/Qwen/Qwen3.5-9B)
-(Apache-2.0). kdb+/q, pykx and KX's `qlint.q_` are **not** redistributed here and
-are licensed separately; supply your own copies.
+The model weights
+([`KxSystems/qsql-qwen35-9b`](https://huggingface.co/KxSystems/qsql-qwen35-9b))
+are distributed separately under the same licence, and are a derivative of
+[`Qwen/Qwen3.5-9B`](https://huggingface.co/Qwen/Qwen3.5-9B) (Apache-2.0).
+kdb+/q, pykx and KX's `qlint.q_` are **not** redistributed here and are
+licensed separately; supply your own copies.
