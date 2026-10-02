@@ -47,21 +47,15 @@ firing on its own keeps that step; the tool firing on its own removes it.
    any seed is excluded from clustering entirely rather than being
    allowed to win.
 2. **Semantic-intent gap (NOT fully closed by any gate — narrowed by
-   self-consistency, backstopped by the skill).** A worked example: qwen
-   produced
-   `... (%; (wavg; \`size; \`price); (sum; \`size)) ...`, a real q idiom
-   combined incorrectly with the ops next to it
-   (`wavg[size; price]` already does the division; the outer `% sum
-   size` is redundant, giving a result off by a factor of total volume).
-   The code parses, lints, and runs against dummy data — gate returns
-   `passed=True`, value is silently wrong. Self-consistency clustering
-   (see "Self-consistency clustering" below) reduces the odds of this
-   shipping unnoticed — a majority-cluster answer is *more likely*
-   correct than a single greedy sample — but a systematic mistake qwen
-   is prone to on a given instruction can still show up in every
-   candidate and win the cluster unanimously. Winning-cluster agreement
-   is a majority-vote signal, NOT an **external reference** compare.
-   The skill `/qsql-coder` backstops the remaining gap via
+   self-consistency, backstopped by the skill).** A draft can parse, lint,
+   and run against dummy data while still not computing what was asked.
+   Self-consistency clustering (see "Self-consistency clustering" below)
+   reduces the odds of this shipping unnoticed — a majority-cluster answer
+   is *more likely* correct than a single greedy sample — but a systematic
+   mistake qwen is prone to on a given instruction can still show up in
+   every candidate and win the cluster unanimously. Winning-cluster
+   agreement is a majority-vote signal, NOT an **external reference**
+   compare. The skill `/qsql-coder` backstops the remaining gap via
    conditional Bash-verify (see "Customer-facing skill" below).
 
 Net: the opt-in default remains, but its load-bearing reason has
