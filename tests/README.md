@@ -6,8 +6,8 @@ run is decided by what you have, not by what you choose.
 
 | Tier | Adds | Count | Where it lives | Runs in CI? |
 |---|---|---|---|---|
-| **1** Pure logic | pytest, nothing else | 98 | `test_extract.py`, `test_self_consistency.py`, `test_qlint_policy.py`, `test_format_output.py` | ✅ `unit` |
-| **2** Embedded q | pykx + a kdb+ licence | 47 | `test_pipeline_gates.py`, `test_eval_compare_skill.py` (`needs_q`) | ⚠️ only with a kdb+ licence secret |
+| **1** Pure logic | pytest, nothing else | 101 | `test_extract.py`, `test_self_consistency.py`, `test_qlint_policy.py`, `test_format_output.py` | ✅ `unit` |
+| **2** Embedded q | pykx + a kdb+ licence | 74 | `test_pipeline_gates.py`, `test_eval_compare_skill.py` (`needs_q`) | ⚠️ only with a kdb+ licence secret |
 | **3** Real qlint | a working `qlint.q_` | 6 | `test_pipeline_gates_qlint.py` (`needs_qlint`) | ❌ nobody's — see below |
 | **4** Live model | a vLLM serving the model | 3 + 1 | `mcp_server/smoke_test.py`, `mcp_server/protocol_test.py` | ❌ by hand only |
 
@@ -55,7 +55,7 @@ scope cannot drift with whatever happens to be installed on a runner:
 
 ```bash
 pytest -q -m "not needs_q"                  # tier 1        -> 98 passed
-pytest -q -m "needs_q and not needs_qlint"  # tier 2        -> 47 passed
+pytest -q -m "needs_q and not needs_qlint"  # tier 2        -> 74 passed
 pytest -q -m needs_qlint                    # tier 3        -> 6 passed
 ```
 
@@ -187,7 +187,7 @@ above under what it forks and why), one for tier 3, sharing their fixtures via
 fixtures, so `conftest.py` (loaded on every run, including tier-1-only ones)
 does not drag pykx into tier 1.
 
-**Tier 2** — `test_pipeline_gates.py` (9 tests) — the gates end to end with the model stubbed: a
+**Tier 2** — `test_pipeline_gates.py` (22 tests) — the gates end to end with the model stubbed: a
 candidate that parses and lints clean but raises at execution (`price+sym`,
 float + symbol) must leave no cluster; an unparseable candidate must be
 rejected at the first gate; a 3-1 split must finalize on the majority when the
@@ -199,7 +199,11 @@ gate still bites, and `check_c9_qlint` must report `skipped` rather than a bare
 `pass=True` that reads as "linted clean"; and two overlapping calls in one
 process must each cluster against their own results (the HTTP transport's real
 shape — `_run_pykx` releases its lock across the awaited `chat`, so the calls
-interleave at round boundaries).
+interleave at round boundaries). Dict-shaped results must not escape as a q
+signal either: a dict of a table (`exec ... by sym`) must be described as a
+dict, not a keyed table, and `.eval.cmp` must answer keyed table vs dict vs
+dict of a table with a boolean — tolerating float drift inside a dict as it does
+inside a table — rather than signal into `results_equal`'s safety net.
 
 **Tier 3** — `test_pipeline_gates_qlint.py` (6 tests) — the claims that need a real linter: that a response
 reports `lint_gate: "kx_qlint_c9"` when C9 genuinely ran, that a parse failure

@@ -22,12 +22,15 @@ embedded q is single-threaded.
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 
 import pykx as kx
 
 from mcp_server.type_gen import TYPE_GEN_STMTS
+
+log = logging.getLogger(__name__)
 
 
 DEFAULT_NROWS = 20
@@ -213,7 +216,16 @@ def results_equal(var_a: str, var_b: str) -> bool:
     _ensure_evalcmp()
     if not (_NAME_RE.match(var_a) and _NAME_RE.match(var_b)):
         raise ValueError(f"unsafe result var name(s): {var_a!r}, {var_b!r}")
-    return bool(kx.q(f".eval.cmp[{var_a}; {var_b}]"))
+    try:
+        return bool(kx.q(f".eval.cmp[{var_a}; {var_b}]"))
+    except kx.QError as e:
+        # Safety net: `.eval.cmp` is meant to answer 0b, not signal, on any
+        # pair of unlike shape (it once signalled 'type on a keyed table vs a
+        # plain dict). A signal still means "not shown equal" -- but letting
+        # it escape fails the whole generate_qsql call, and swallowing it
+        # silently hides a `.eval.cmp` bug that splits clusters, so log it.
+        log.warning(".eval.cmp signalled on %s vs %s: %s", var_a, var_b, e)
+        return False
 
 
 def snapshot_globals() -> set[str]:

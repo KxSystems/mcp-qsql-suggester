@@ -328,3 +328,48 @@ def test_wrapinfo_survives_the_non_table_results_that_reach_b_wrap(kxq, a, b):
 def test_wrapinfo_handles_a_mixed_table_and_atom_pair(kxq):
     """One side a table, the other not: still must not raise."""
     kxq(".eval.wrapInfo[([]v:1 2); 3f]")
+
+
+# --------------------------------------------------------------------------- #
+# dict shapes: keyed table vs dict vs dict of a table
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize(
+    "a,b,want",
+    [
+        # keyed table vs a plain dict, both ways and against a dict of a table
+        ("([s:`a`b] x:1 2f)", "(enlist`s)!enlist`a", False),
+        ("(enlist`s)!enlist`a", "([s:`a`b] x:1 2f)", False),
+        ("([s:`a`b] x:1 2f)", "`a`b!([]x:1 2f)", False),
+        ("`a`b!([]x:1 2f)", "([s:`a`b] x:1 2f)", False),
+        # dict of a table (`exec ... by sym`): float drift tolerated, a real
+        # difference is not, and it never equals a dict of a plain list
+        ("`a`b!([]x:1 2f)", "`a`b!([]x:1 2f+1e-11)", True),
+        ("`a`b!([]x:1 2f)", "`a`b!([]x:1 3f)", False),
+        ("`a`b!([]x:1 2f)", "`a`b!1 2f", False),
+        ("`a`b!1 2f", "`a`b!([]x:1 2f)", False),
+        # plain numeric dict (`exec avg price by sym`): same rule
+        ("`a`b!1 2f", "`a`b!1 2f+1e-11", True),
+        ("`a`b!1 2f", "`a`c!1 2f", False),
+        ("`a`b!1 2f", "`a`b!1 3f", False),
+    ],
+)
+def test_cmp_answers_dict_shapes_without_signalling(kxq, a, b, want):
+    """Testing only ``98h=type value`` took a dict of a table for a keyed table
+    and signalled 'type on ``0!``; the same cases as the server copy's test."""
+    assert _b(kxq(f".eval.cmp[{a}; {b}]")) is want
+
+
+def test_dict_of_table_is_described_as_a_dict(kxq):
+    assert kxq(".eval.descVal[`a`b!([]x:1 2)]").py() == b"dict (2 entries)"
+
+
+@pytest.mark.parametrize(
+    "a,b",
+    [("`a`b!1 2f", "`a`b!1 2f+1e-11"), ("`a`b!([]x:1 2f)", "`a`b!([]x:1 2f+1e-11)")],
+)
+def test_wrapinfo_and_diag_survive_plain_dicts(kxq, a, b):
+    """``meta`` raises 'type on a plain dict, which wrapInfo used to call on
+    any 99h; diag's unkey and flatNumeric took the same wrong test."""
+    kxq(f".eval.wrapInfo[{a}; {b}]")
+    kxq(f".eval.diag[{a}; `a`b!1 9f]")
