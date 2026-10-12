@@ -43,6 +43,12 @@ def test_multi_line_q_fence_keeps_internal_newlines():
     ) == "t:select from trade\nselect avg price by sym from t"
 
 
+def test_uniformly_indented_q_fence_is_dedented():
+    """``.strip()`` alone would leave ``a:1\n  b:2``: under script load the
+    indented second line continues the first, one statement ``a:1 b:2``."""
+    assert extract_qsql("```q\n  a:1\n  f:{[t]\n    t}\n```") == "a:1\nf:{[t]\n  t}"
+
+
 # --- strategy 2: any fence --------------------------------------------- #
 
 def test_unlabelled_fence_is_extracted():
@@ -78,9 +84,20 @@ def test_assignment_line_is_recognised_as_code():
 
 def test_continuation_line_after_code_is_kept():
     """Once collection has started, a line that matches no keyword is treated
-    as a continuation — this is what keeps wrapped `select` clauses intact."""
+    as a continuation — this is what keeps wrapped `select` clauses intact.
+    Its indentation is kept: flattened, it would start a new statement under
+    script load (and fail the C9 gate's UNINDENTED_CODE)."""
     out = extract_qsql("select avg price\n  by sym from trade")
-    assert out == "select avg price\nby sym from trade"
+    assert out == "select avg price\n  by sym from trade"
+
+
+def test_unfenced_lambda_keeps_body_indentation():
+    raw = "f:{[t]\n  select from t\n  };\nf trade"
+    assert extract_qsql(raw) == raw
+
+
+def test_uniformly_indented_answer_is_dedented():
+    assert extract_qsql("  t:select from trade\n  count t") == "t:select from trade\ncount t"
 
 
 def test_q_comment_line_is_kept():

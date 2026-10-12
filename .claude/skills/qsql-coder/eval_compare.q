@@ -1,10 +1,11 @@
 / Skill-side q helpers: relational compare and divergence diagnostic.
 / Concatenated (via plain `cat`) into ad-hoc q scripts by:
 /   - .claude/skills/qsql-coder/SKILL.md (Bash-verify reference compare + Case C diagnostic)
-/ Depends on `.eval.descVal` from eval_describe.q — load that file
-/ BEFORE this one (otherwise `.eval.diag` will fail with 'undef).
-/ Scalar-safe throughout: nested $[99h=type a; ...] avoids evaluating
-/ `value a` on non-dict inputs (q's `and` doesn't short-circuit).
+/ Depends on `.eval.descVal` / `.eval.isKeyed` from eval_describe.q — load
+/ that file BEFORE this one (otherwise this one fails with 'undef).
+/ Scalar-safe throughout: keyed-table tests go through .eval.isKeyed, which
+/ never evaluates `key` / `value` on a non-dict (q's `and` doesn't
+/ short-circuit).
 / NOTE: do NOT add a bare `/` line — q treats it as the start of a
 / block comment that runs until a bare `\` line.
 / DIVERGENCE FROM mcp_server/eval_compare.q, deliberate as of the
@@ -92,8 +93,8 @@
 / epsilon is meaningless for them.
 .eval.cmp:{[a;b]
   if[a~b; :1b];
-  if[(99h=type a) and 98h=type b; if[98h=type value a; :.eval.cmp[0!a; b]]];
-  if[(99h=type b) and 98h=type a; if[98h=type value b; :.eval.cmp[a; 0!b]]];
+  if[.eval.isKeyed[a] and 98h=type b; :.eval.cmp[0!a; b]];
+  if[.eval.isKeyed[b] and 98h=type a; :.eval.cmp[a; 0!b]];
   / Numeric first, THEN the type guard -- the order .eval.eqEps has always
   / used. Previously the guard came first here, so a `j` list vs an `f`
   / list returned 0b at top level while the identical pair inside a table
@@ -109,7 +110,14 @@
   if[98h=type a;
     :($[(asc cols a)~asc cols b; .eval.eqEps[a; (cols a) xcols b; 1e-9]; 0b])
     |.eval.eqEps[value flip a; value flip b; 1e-9]];
-  if[99h=type a; if[98h=type value a; :.eval.cmp[0!a; 0!b]]];
+  / 99h: keyed tables unkey; a keyed table never equals a plain dict; a
+  / plain dict (`exec avg price by sym`, `exec ... by sym` -> dict of a
+  / table) compares key against key and value against value, so float
+  / drift in its values is tolerated the same as in a table's columns.
+  if[99h=type a;
+    if[.eval.isKeyed[a] and .eval.isKeyed b; :.eval.cmp[0!a; 0!b]];
+    if[.eval.isKeyed[a] or .eval.isKeyed b; :0b];
+    :.eval.cmp[key a; key b] and .eval.cmp[value a; value b]];
   0b };
 
 / Element-wise / value-wise equality with relative epsilon tolerance
@@ -144,7 +152,10 @@
     :0b];
   if[98h=ta;
     :all .eval.eqEps[;;tol] ./: flip (value flip a; value flip b)];
-  if[99h=ta; if[98h=type value a; :.eval.eqEps[0!a; 0!b; tol]]];
+  if[99h=ta;
+    if[.eval.isKeyed[a] and .eval.isKeyed b; :.eval.eqEps[0!a; 0!b; tol]];
+    if[.eval.isKeyed[a] or .eval.isKeyed b; :0b];
+    :.eval.eqEps[key a; key b; tol] and .eval.eqEps[value a; value b; tol]];
   0b };
 
 / Flatten any q value into a typed-float list of numeric atoms. Lets
@@ -153,7 +164,7 @@
 / numeric list/atom -> cast to float; non-numeric -> empty.
 .eval.flatNumeric:{[v]
   if[98h=type v; :raze {`float$x} each v[exec c from meta[v] where t in "hijef"]];
-  if[99h=type v; if[98h=type value v; :.eval.flatNumeric 0!v]];
+  if[99h=type v; :.eval.flatNumeric $[.eval.isKeyed v; 0!v; value v]];
   if[(type v) in 5 6 7 8 9h; :`float$v];
   if[(neg type v) in 5 6 7 8 9h; :enlist `float$v];
   `float$() };
@@ -177,7 +188,7 @@
 / `p`. So non-tables fall back to descVal.
 .eval.wrapInfo:{[a;b]
   -1 "=== WRAP DIFFERENCE (values agree, presentation differs) ===";
-  tbl:all (type each (a;b)) in 98 99h;
+  tbl:all {(98h=type x) or .eval.isKeyed x} each (a;b);
   if[tbl; -1 "  qwen meta:"; show meta a; -1 "  reference meta:"; show meta b];
   if[not tbl; -1 "  qwen     : ",.eval.descVal a; -1 "  reference: ",.eval.descVal b];
   };
@@ -194,8 +205,8 @@
   -1 "  qwen   shape: ",.eval.descVal a;
   -1 "  reference shape: ",.eval.descVal b;
   if[(type a)<>type b; -1 "  -> shape-class mismatch; ratio skipped"; :(::)];
-  ua: $[99h=type a; $[98h=type value a; 0!a; a]; a];
-  ub: $[99h=type b; $[98h=type value b; 0!b; b]; b];
+  ua: $[.eval.isKeyed a; 0!a; a];
+  ub: $[.eval.isKeyed b; 0!b; b];
   if[(98h=type ua) and (count ua)<>count ub;
     -1 "  -> row-count differs (qwen=",(string count ua),", reference=",(string count ub),") -- likely missing/extra `where` or wrong join direction"];
   if[98h=type ua;

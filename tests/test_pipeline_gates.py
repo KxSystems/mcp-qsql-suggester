@@ -277,3 +277,55 @@ def test_concurrent_calls_do_not_collide(monkeypatch, run_async):
         # comparison saw this call's own round-1 result.
         assert result["winning_cluster_size"] == 6, name
         assert result["n_clusters"] == 2, name
+
+
+# --------------------------------------------------------------------------- #
+# result shapes that used to raise out of the clustering step
+# --------------------------------------------------------------------------- #
+
+def test_dict_of_table_is_described_not_raised(run_async):
+    """A symbol-keyed dict whose value is a table (``exec ... by sym``) is not
+    a keyed table; ``.eval.descVal`` used to call ``keys`` on it and signal
+    'rank, which failed the whole call."""
+    import pykx as kx
+    from mcp_server import qexec
+    kx.q("dvt:`a`b!([]x:1 2)")
+    assert qexec.describe_result("dvt") == "dict (2 entries)"
+    assert qexec.is_degenerate_result("dvt") is False
+
+
+def test_keyed_table_vs_dict_compares_unequal(run_async):
+    import pykx as kx
+    from mcp_server import qexec
+    kx.q("kta:([venue:enlist`JPM] totalQty:enlist 5); ktb:(enlist`venue)!enlist`META")
+    assert qexec.results_equal("kta", "ktb") is False
+
+
+@pytest.mark.parametrize(
+    "a,b,want",
+    [
+        # keyed table vs a plain dict, both ways and against a dict of a table
+        ("([s:`a`b] x:1 2f)", "(enlist`s)!enlist`a", False),
+        ("(enlist`s)!enlist`a", "([s:`a`b] x:1 2f)", False),
+        ("([s:`a`b] x:1 2f)", "`a`b!([]x:1 2f)", False),
+        ("`a`b!([]x:1 2f)", "([s:`a`b] x:1 2f)", False),
+        # dict of a table (`exec ... by sym`): float drift tolerated, a real
+        # difference is not, and it never equals a dict of a plain list
+        ("`a`b!([]x:1 2f)", "`a`b!([]x:1 2f+1e-11)", True),
+        ("`a`b!([]x:1 2f)", "`a`b!([]x:1 3f)", False),
+        ("`a`b!([]x:1 2f)", "`a`b!1 2f", False),
+        ("`a`b!1 2f", "`a`b!([]x:1 2f)", False),
+        # plain numeric dict (`exec avg price by sym`): same rule
+        ("`a`b!1 2f", "`a`b!1 2f+1e-11", True),
+        ("`a`b!1 2f", "`a`c!1 2f", False),
+        ("`a`b!1 2f", "`a`b!1 3f", False),
+    ],
+)
+def test_cmp_answers_dict_shapes_without_signalling(run_async, a, b, want):
+    """``.eval.cmp`` itself must answer these, not signal into
+    ``results_equal``'s safety net: a signal reads as "unequal", which on a
+    dict of a table split two float-drift-equal candidates into two clusters."""
+    import pykx as kx
+    from mcp_server import qexec
+    qexec._ensure_evalcmp()
+    assert bool(kx.q(f".eval.cmp[{a}; {b}]")) is want

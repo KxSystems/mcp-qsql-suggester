@@ -33,13 +33,17 @@
 
 .eval.fmtCols:{[x] c:cols x; t:exec t from meta x; ", " sv {(string x),"(",y,")"} ./: flip (c;t)};
 
-/ Nested $[99h=type r; $[98h=type value r; ...]] is deliberate. Flat
-/ `(99h=type r) and 98h=type value r` evaluates `value r` even when r
-/ is not 99h (q's `and` doesn't short-circuit), raising 'type on
-/ scalars / lists.
+/ A keyed table is a 99h whose key AND value are both tables. Testing the
+/ value alone also matches a dict OF a table (`a`b!([]x:1 2), the shape
+/ `exec ... by sym` returns), and then `keys` / `0!` on it signal 'rank /
+/ 'type. Safe on any input: the $ keeps `key x` / `value x` off non-dicts,
+/ which a flat `(99h=type x) and ...` would not (q's `and` doesn't
+/ short-circuit).
+.eval.isKeyed:{[x] $[99h=type x; (98h=type key x) and 98h=type value x; 0b]};
+
 .eval.descVal:{[r] $[
   98h=type r; "table: ",.eval.fmtCols r;
-  99h=type r; $[98h=type value r; "keyed table. keys: ",(", " sv string keys r),". cols: ",.eval.fmtCols value r; "dict (",(string count r)," entries)"];
+  99h=type r; $[.eval.isKeyed r; "keyed table. keys: ",(", " sv string keys r),". cols: ",.eval.fmtCols value r; "dict (",(string count r)," entries)"];
   0>type r; "scalar ",string type r;
   "list type ",string type r]};
 
@@ -55,14 +59,21 @@
 / epsilon is meaningless for them.
 .eval.cmp:{[a;b]
   if[a~b; :1b];
-  if[(99h=type a) and 98h=type b; if[98h=type value a; :.eval.cmp[0!a; b]]];
-  if[(99h=type b) and 98h=type a; if[98h=type value b; :.eval.cmp[a; 0!b]]];
+  if[.eval.isKeyed[a] and 98h=type b; :.eval.cmp[0!a; b]];
+  if[.eval.isKeyed[b] and 98h=type a; :.eval.cmp[a; 0!b]];
   if[not (type a)=type b; :0b];
   if[(abs type a) in 5 6 7 8 9h; :.eval.eqEps[a; b; 1e-9]];
   if[98h=type a;
     :($[(asc cols a)~asc cols b; .eval.eqEps[a; (cols a) xcols b; 1e-9]; 0b])
     |.eval.eqEps[value flip a; value flip b; 1e-9]];
-  if[99h=type a; if[98h=type value a; :.eval.cmp[0!a; 0!b]]];
+  / 99h: keyed tables unkey; a keyed table never equals a plain dict; a
+  / plain dict (`exec avg price by sym`, `exec ... by sym` -> dict of a
+  / table) compares key against key and value against value, so float
+  / drift in its values is tolerated the same as in a table's columns.
+  if[99h=type a;
+    if[.eval.isKeyed[a] and .eval.isKeyed b; :.eval.cmp[0!a; 0!b]];
+    if[.eval.isKeyed[a] or .eval.isKeyed b; :0b];
+    :.eval.cmp[key a; key b] and .eval.cmp[value a; value b]];
   0b };
 
 / Element-wise / value-wise equality with relative epsilon tolerance
@@ -88,5 +99,8 @@
   if[ta<>tb; :0b];
   if[98h=ta;
     :all .eval.eqEps[;;tol] ./: flip (value flip a; value flip b)];
-  if[99h=ta; if[98h=type value a; :.eval.eqEps[0!a; 0!b; tol]]];
+  if[99h=ta;
+    if[.eval.isKeyed[a] and .eval.isKeyed b; :.eval.eqEps[0!a; 0!b; tol]];
+    if[.eval.isKeyed[a] or .eval.isKeyed b; :0b];
+    :.eval.eqEps[key a; key b; tol] and .eval.eqEps[value a; value b; tol]];
   0b };

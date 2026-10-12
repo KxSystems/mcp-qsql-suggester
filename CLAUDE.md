@@ -285,7 +285,7 @@ tier with `-m` is a usage error rather than a silent `0 passed, N skipped`
 resolves through `PATH` and may not be the env holding pykx.
 Full detail in [`tests/README.md`](tests/README.md).
 
-**Tier 1 — pure logic** (98 tests). No q, no kdb+ license, no pykx, no
+**Tier 1 — pure logic** (101 tests). No q, no kdb+ license, no pykx, no
 `qlint.q_`, no GPU. Covers `extract_qsql`, the self-consistency decision
 logic (round-cap validation, union-find, winning-cluster choice +
 tie-break, shortest-code pick, `ROUND_MIN_WEIGHT` thresholds), the
@@ -293,12 +293,12 @@ tie-break, shortest-code pick, `ROUND_MIN_WEIGHT` thresholds), the
 claims (`.claude/skills/.../format_output.py`). The one tier every CI
 runs (`unit`).
 
-**Tier 2 — the gates against real embedded q, model stubbed** (47 tests).
+**Tier 2 — the gates against real embedded q, model stubbed** (74 tests).
 Needs pykx + a licence, but **no qlint, no GPU and no vLLM**:
 `vllm_client.chat` is replaced with fixed completions, while parse,
-multi-seed execution and clustering all run for real (9 tests), plus the
+multi-seed execution and clustering all run for real (22 tests), plus the
 skill copy of `eval_compare.q` and its deliberate divergence from the server
-copy (38 tests). CI-able only where a kdb+ licence can be supplied as a
+copy (52 tests). CI-able only where a kdb+ licence can be supplied as a
 secret.
 
 **Tier 3 — the claims that need a real linter** (6 tests). Additionally
