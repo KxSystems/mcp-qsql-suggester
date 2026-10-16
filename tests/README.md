@@ -6,7 +6,7 @@ run is decided by what you have, not by what you choose.
 
 | Tier | Adds | Count | Where it lives | Runs in CI? |
 |---|---|---|---|---|
-| **1** Pure logic | pytest, nothing else | 101 | `test_extract.py`, `test_self_consistency.py`, `test_qlint_policy.py`, `test_format_output.py` | ✅ `unit` |
+| **1** Pure logic | pytest, nothing else | 107 | `test_extract.py`, `test_self_consistency.py`, `test_qlint_policy.py`, `test_format_output.py`, `test_vllm_client.py` | ✅ `unit` |
 | **2** Embedded q | pykx + a kdb+ licence | 74 | `test_pipeline_gates.py`, `test_eval_compare_skill.py` (`needs_q`) | ⚠️ only with a kdb+ licence secret |
 | **3** Real qlint | a working `qlint.q_` | 6 | `test_pipeline_gates_qlint.py` (`needs_qlint`) | ❌ nobody's — see below |
 | **4** Live model | a vLLM serving the model | 3 + 1 | `mcp_server/smoke_test.py`, `mcp_server/protocol_test.py` | ❌ by hand only |

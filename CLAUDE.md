@@ -156,7 +156,8 @@ This example: caps self-consistency at 2 rounds (4 -> 8, skipping the
 16-candidate round), lowers sampling temperature to 0.6, keeps the
 default 3 seeds, and generates 50 rows per seed instead of the
 default 20. The startup log line (`qlint.q_ + typeGen + eval_compare
-loaded (round_caps=..., temperature=..., seeds=..., nrows=...)`)
+loaded (round_caps=..., temperature=..., seeds=..., nrows=...,
+split_requests=...)`)
 echoes back the resolved config so you can confirm what actually took
 effect — an invalid env value falls back to its default with a
 logged warning rather than failing startup.
@@ -174,7 +175,8 @@ map. Summary of the self-consistency pipeline inside `run_generate_loop`:
 
 1. **Generate**: draw `n` independent candidates per round via
    `vllm_client.chat(..., n=...)` (one HTTP request per round — the
-   prompt is prefilled once, not once per candidate). Round caps default
+   prompt is prefilled once, not once per candidate; one request per
+   candidate under `MCP_QSQL_SPLIT_REQUESTS=1`). Round caps default
    to `4 -> 8 -> 16` (`MCP_QSQL_SC_ROUND_CAPS`), stopping early once a
    round's winning cluster is large enough (`mcp_server.self_consistency
    .ROUND_MIN_WEIGHT`).
@@ -285,11 +287,11 @@ tier with `-m` is a usage error rather than a silent `0 passed, N skipped`
 resolves through `PATH` and may not be the env holding pykx.
 Full detail in [`tests/README.md`](tests/README.md).
 
-**Tier 1 — pure logic** (101 tests). No q, no kdb+ license, no pykx, no
+**Tier 1 — pure logic** (107 tests). No q, no kdb+ license, no pykx, no
 `qlint.q_`, no GPU. Covers `extract_qsql`, the self-consistency decision
 logic (round-cap validation, union-find, winning-cluster choice +
 tie-break, shortest-code pick, `ROUND_MIN_WEIGHT` thresholds), the
-`MCP_QSQL_QLINT` gate policy, and the skill renderer's case-A verdict
+`MCP_QSQL_QLINT` gate policy, the `vllm_client` request shaping (`n=N` vs `MCP_QSQL_SPLIT_REQUESTS`), and the skill renderer's case-A verdict
 claims (`.claude/skills/.../format_output.py`). The one tier every CI
 runs (`unit`).
 
@@ -328,7 +330,8 @@ QLINT_DIR=<dir> PYTHONPATH=. python -m mcp_server.protocol_test
 
 **Do not hoist the lazy pykx imports in `mcp_server/self_consistency.py`
 back to module scope** — that would drag pykx into tier 1 and take
-`tests/` out of CI's reach.
+`tests/` out of CI's reach. The same goes for the lazy `httpx` import in
+`mcp_server/vllm_client.py`: tier-1 CI installs pytest and nothing else.
 
 ## Environment variables (server-side)
 
@@ -344,6 +347,7 @@ another file. Add a variable there first, then here.
 | `VLLM_MODEL` | no | `qsql-qwen35-9b` | Served-model-name |
 | `VLLM_MAX_TOKENS` | no | `2048` | Per-call generation cap |
 | `VLLM_TIMEOUT_S` | no | `120` | httpx read timeout |
+| `MCP_QSQL_SPLIT_REQUESTS` | no | unset | Set to `1` to draw each round's candidates as sequential `n=1` requests instead of one `n=N` request, for gateways that refuse `n>1`. Slower (prompt re-prefilled per request; caps are cumulative, so default caps = at most 16 requests) — see `mcp_server/README.md` for the trade-offs |
 | `MCP_QSQL_SC_ROUND_CAPS` | no | `4,8,16` | Self-consistency round-cap preset, fixed at process/session startup. Restricted to validated presets: a single cap (any N), `4,8`, or `4,8,16`. Ceiling model — a caller's `max_rounds` tool arg can only request fewer rounds, never more |
 | `MCP_QSQL_SC_TEMPERATURE` | no | `0.8` | Default sampling temperature for self-consistency candidates. Freely overridable per call via the tool's `temperature` arg |
 | `MCP_QSQL_SC_SEEDS` | no | `42,43,44` | Comma-separated dummy-table seeds, fixed at process/session startup. No per-call arg. A single seed is accepted for debugging/latency but weakens the cross-seed agreement guarantee (see `mcp_server/README.md` § "Tuning self-consistency execution") |

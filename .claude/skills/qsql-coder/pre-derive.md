@@ -107,15 +107,19 @@ one pre-derive shares). Splitting into two passes is deliberate: pass 1 needs
 `$ROOT`; unquoted would let backticks trigger command substitution.
 
 `$ROOT` is the **repo/plugin** root, not the skill directory — pass 1
-reaches outside the skill into `mcp_server/type_gen.q`, so it cannot
-use `SKILL.md`'s `$SKILL_ROOT`. Same two-homes reasoning as there
-(`SKILL.md` § "Bash-verify protocol"): `CLAUDE_PLUGIN_ROOT` when this runs as an
-installed plugin, `git rev-parse` when it runs project-scope inside
-the repo. Both layouts keep `mcp_server/` and `.claude/skills/` at the
-root, so one variable covers both trees.
+reaches outside the skill into `mcp_server/type_gen.q`. This file is
+read with the Read tool, so Claude Code does **not** substitute
+`${CLAUDE_SKILL_DIR}` here the way it does in `SKILL.md`. Replace
+`<SKILL_DIR>` below with the skill directory `SKILL.md` resolved (its
+`SKILL_ROOT=` line, or the "Base directory for this skill" shown when
+the skill loaded); the root is three levels up, since both homes keep
+the skill at `<root>/.claude/skills/qsql-coder`. Do not use
+`$CLAUDE_PLUGIN_ROOT` (unset in the Bash tool's shell) or
+`git rev-parse` (the user's repo, not this one) — `SKILL.md` §
+"Bash-verify protocol" has the reasons.
 
 ```bash
-ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}"
+ROOT="$(cd "<SKILL_DIR>/../../.." && pwd)"
 {
   cat "$ROOT/mcp_server/type_gen.q"
   cat "$ROOT/.claude/skills/qsql-coder/eval_describe.q"
@@ -185,7 +189,7 @@ mcp__kxqsql__generate_qsql(
 ### Audit-trail wiring into `format_output.py`
 
 When you subsequently call `scripts/format_output.py` (resolved as in
-`SKILL.md` § "Outputs", via `${CLAUDE_PLUGIN_ROOT:-...}`) to
+`SKILL.md` § "Outputs", under the same skill directory) to
 render the final response, pass `$DISPLAY_SHAPE` (the descSchema
 output, q-schema notation) as the JSON payload's `pre_derive_shape`
 field — NOT `$SHAPE` (descVal format, which is what MCP/qwen got):

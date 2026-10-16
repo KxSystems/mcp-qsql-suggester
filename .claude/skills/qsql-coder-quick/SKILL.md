@@ -126,14 +126,29 @@ survive verbatim.
 
 The formatter is `qsql-coder`'s, not this skill's — one renderer
 serves both, so the path crosses into the sibling skill's directory.
-`${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}` resolves in
-both of this skill's homes: the `mcp-qsql-suggester` repo (project
+This skill's directory is `${CLAUDE_SKILL_DIR}`: Claude Code
+substitutes that exact token in the SKILL.md text when the skill
+loads, in both of its homes — the `mcp-qsql-suggester` repo (project
 scope) and an installed `mcp-qsql-suggester` plugin, which bundles
-both skills and so still has the sibling alongside. Do not shorten it
-to a bare relative path — that assumes the caller's cwd is the repo.
+both skills and so still has the sibling alongside. Do not replace it
+with `$CLAUDE_PLUGIN_ROOT` (not set in the Bash tool's shell),
+`git rev-parse` (the user's repo, or nothing outside one) or a bare
+relative path (assumes the caller's cwd is the repo). If the paths
+below are not absolute (they still hold the unexpanded
+`CLAUDE_SKILL_DIR` placeholder), substitution did not happen: use the
+"Base directory for this skill" shown when the skill loaded instead.
+
+The two skills must be installed together: install the plugin, or copy
+both `qsql-coder/` and `qsql-coder-quick/` side by side. Each block
+below checks that the formatter exists and stops with a message naming
+the missing file, rather than letting `python3` fail with a bare
+"No such file". Each Bash call is a fresh shell, so the check is
+repeated in both blocks.
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}/.claude/skills/qsql-coder/scripts/format_output.py" <<'__QSQL_FORMAT_END__'
+F="${CLAUDE_SKILL_DIR}/../qsql-coder/scripts/format_output.py"
+[ -f "$F" ] || { echo "qsql-coder-quick needs the sibling qsql-coder skill: $F not found. Install both skills (or the mcp-qsql-suggester plugin)." >&2; exit 1; }
+python3 "$F" <<'__QSQL_FORMAT_END__'
 {
   "instruction_interpreted": "<one or two sentences>",
   "schemas": {"trade": "`time`sym`price`size!`p`s`f`j"},
@@ -187,7 +202,9 @@ formatter, with `opus_could_write=false` — nobody wrote an alternative, which
 is exactly what that field says:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}/.claude/skills/qsql-coder/scripts/format_output.py" <<'__QSQL_FORMAT_END__'
+F="${CLAUDE_SKILL_DIR}/../qsql-coder/scripts/format_output.py"
+[ -f "$F" ] || { echo "qsql-coder-quick needs the sibling qsql-coder skill: $F not found. Install both skills (or the mcp-qsql-suggester plugin)." >&2; exit 1; }
+python3 "$F" <<'__QSQL_FORMAT_END__'
 {
   "instruction_interpreted": "<one or two sentences>",
   "schemas": {"trade": "`time`sym`price`size!`p`s`f`j"},
