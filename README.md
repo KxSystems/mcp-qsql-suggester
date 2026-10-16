@@ -236,6 +236,11 @@ The repeated name is not a typo: the marketplace and its one plugin are both
 named after the repo. `add` takes the GitHub path, `install` takes
 `<plugin>@<marketplace>`. One plugin carries both skills.
 
+If you copy the skills by hand instead of installing the plugin, copy **both**
+`qsql-coder/` and `qsql-coder-quick/`: the quick skill renders its output with
+`qsql-coder/scripts/format_output.py`, and stops with a message naming the
+missing file when the sibling folder is absent.
+
 The plugin serves them straight out of `.claude/skills/` —
 [`.claude-plugin/plugin.json`](.claude-plugin/plugin.json)'s `skills` field
 points at that directory, so there is no second copy to keep in sync.

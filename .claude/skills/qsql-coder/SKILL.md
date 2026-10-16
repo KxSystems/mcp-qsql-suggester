@@ -330,22 +330,25 @@ single-quoted heredoc so the backticks in q syms survive shell
 quoting.
 
 Resolve those three files through `$SKILL_ROOT` as defined below —
-never through a bare relative path, and never through
-`git rev-parse` alone. This skill has two homes: the
-`mcp-qsql-suggester` repo, where it is a project-scope skill under
-`.claude/skills/`, and an installed `mcp-qsql-suggester` plugin, where
-the harness sets `CLAUDE_PLUGIN_ROOT` to the plugin's own root. The
-`${CLAUDE_PLUGIN_ROOT:-...}` fallback resolves correctly in both, and
-the plugin layout keeps `.claude/skills/` so the suffix is the same
-either way. A bare relative path assumes the caller's cwd is the repo,
-and `git rev-parse` on its own silently resolves to *the user's* repo
-when this runs as a plugin in someone else's project — the `cat` then
-fails with an error that says nothing about paths. Each Bash call gets
-a fresh shell, so every block below defines the root it needs rather
-than relying on an earlier one.
+never through a bare relative path, `git rev-parse`, or
+`$CLAUDE_PLUGIN_ROOT`. This skill's directory is
+`${CLAUDE_SKILL_DIR}`: Claude Code substitutes that exact token in
+the SKILL.md text when the skill loads, in both of its homes (the
+`mcp-qsql-suggester` repo, where it is a project-scope skill, and an
+installed plugin). Nothing else works in both: `CLAUDE_PLUGIN_ROOT` is
+not set in the Bash tool's shell and is not substituted in a
+`${CLAUDE_PLUGIN_ROOT:-...}` spelling, a bare relative path assumes the
+caller's cwd is the repo, and `git rev-parse` resolves to *the user's*
+repo (or fails outside one) — the `cat` then fails with an error that
+says nothing about paths. If the path in the line below is not an
+absolute path (it still holds the unexpanded `CLAUDE_SKILL_DIR`
+placeholder), substitution did not happen: use the "Base directory
+for this skill" shown when the skill loaded instead.
+Each Bash call gets a fresh shell, so every block below defines the
+root it needs rather than relying on an earlier one.
 
 ```bash
-SKILL_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}/.claude/skills/qsql-coder"
+SKILL_ROOT="${CLAUDE_SKILL_DIR}"
 {
   cat "$SKILL_ROOT/verify_gen.q"
   cat "$SKILL_ROOT/eval_describe.q"
@@ -530,7 +533,7 @@ parallel invocations (e.g. spawning 5 agents to render 5 cases at once)
 don't race on a shared path.
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}/.claude/skills/qsql-coder/scripts/format_output.py" <<'__QSQL_FORMAT_END__'
+python3 "${CLAUDE_SKILL_DIR}/scripts/format_output.py" <<'__QSQL_FORMAT_END__'
 {
   "instruction_interpreted": "<one or two sentences>",
   "schemas": {"trade": "`time`sym`price`size!`p`s`f`j"},
@@ -633,8 +636,9 @@ drift bug we just fixed.
   magnitude) escape every static and runtime gate; only Bash-verify
   against an independent reference catches them.
 - **Developer-only A/B-test mode — "pre-derive" protocol** (not for
-  customer use): there is a separate protocol in `pre-derive.md`,
-  the file sitting next to this `SKILL.md`, that injects an
+  customer use): there is a separate protocol in
+  `${CLAUDE_SKILL_DIR}/pre-derive.md`, the file sitting next to this
+  `SKILL.md`, that injects an
   `Expected result schema:` hint into qwen's prompt, aligning the MCP
   path with the prompt format used during model training/evaluation.
   It is **not** auto-loaded and **not** part of the customer flow.

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 # MUST be first import so PYKX_THREADING=1 is set before any pykx import.
 from mcp_server import loop as _loop  # noqa: F401
+from mcp_server import vllm_client
 
 import argparse
 import asyncio
@@ -208,9 +209,10 @@ def main() -> None:
 
     log.info(
         "%s + typeGen + eval_compare loaded (round_caps=%s, temperature=%.2f, "
-        "seeds=%s, nrows=%d); starting %s MCP server",
+        "seeds=%s, nrows=%d, split_requests=%s); starting %s MCP server",
         "qlint.q_" if gate.enabled else "NO qlint.q_ (lint gate disabled)",
         _loop.SC_ROUND_CAPS, _loop.SC_TEMPERATURE, _loop.SC_SEEDS, _loop.SC_NROWS,
+        vllm_client.SPLIT_REQUESTS,
         args.transport,
     )
     mcp.run(transport=args.transport)
