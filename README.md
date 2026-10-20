@@ -18,19 +18,19 @@ customer-UX guidance.
 
 ## What the self-consistency pipeline buys you
 
-Measured on a held-out set of 1120 qSQL tasks, holding the model fixed and
+Measured on a held-out set of 1078 qSQL tasks, holding the model fixed and
 varying only the decoding strategy. A pass means the generated q executed against
 dummy tables built from the task's declared schemas and its result matched the
 task's reference implementation over the same tables; anything that failed to
-parse, raised, timed out or returned a degenerate result counts as a failure, and
-so do the 28 tasks the harness could not evaluate.
+parse, raised, timed out or returned a degenerate result counts as a failure. The
+harness evaluated every task, so the denominator is 1078 exactly.
 
 | decoding | pass | rate |
 |---|---|---|
-| single sample, greedy (temperature 0) | 607/1120 | 54.2% |
-| single sample, temperature 0.8 | 555/1120 | 49.6% |
-| **self-consistency (this server), temperature 0.8** | **690/1120** | **61.6%** |
-| *pass@16 ceiling — any of 16 samples passes* | *851/1120* | *76.0%* |
+| single sample, greedy (temperature 0) | 606/1078 | 56.2% |
+| single sample, temperature 0.8 | 555/1078 | 51.5% |
+| **self-consistency (this server), temperature 0.8** | **690/1078** | **64.0%** |
+| *pass@16 ceiling — any of 16 samples passes* | *850/1078* | *78.8%* |
 
 The comparison is paired — every row ran on the same tasks — and the margin
 against either single-sample baseline is far outside sampling noise. The
@@ -539,17 +539,17 @@ Detail behind
 above.
 
 Every row ran on the same tasks, so the comparison is paired: the pipeline wins
-105 tasks and loses 22 against the greedy sample (exact McNemar *p* ~= 4 x
+105 tasks and loses 21 against the greedy sample (exact McNemar *p* ~= 1 x
 10^-14), and wins 162 against 27 versus the first sample of its own
 temperature-0.8 draw (*p* ~= 1 x 10^-24). The greedy row is deterministic — two
-independent runs of it produced byte-identical completions on all 1120 tasks.
+independent runs of it produced byte-identical completions on all 1078 tasks.
 
 Three things in that table matter more than the headline:
 
-- **Turning the temperature up costs 4.6 points on its own** (54.2% -> 49.6%,
+- **Turning the temperature up costs 4.7 points on its own** (56.2% -> 51.5%,
   greedy against one sample at 0.8). Diverse candidates are not free, and the
   clustering has to pay that back before it earns anything. The net over the
-  better single-sample baseline is +7.4 points.
+  better single-sample baseline is +7.8 points.
 - **The wrapper closes 34% of the distance to the pass@16 ceiling.** A majority
   vote over the model's own samples recovers about a third of what a perfect
   oracle picker would.
