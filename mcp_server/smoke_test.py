@@ -127,10 +127,14 @@ async def scenario_runtime_exec_disabled() -> bool:
 
 
 async def main() -> int:
-    await loop.ensure_qlint_loaded()
+    gate = await loop.ensure_qlint_loaded()
     await loop.ensure_typegen_loaded()
     await loop.ensure_evalcmp_loaded()
-    print("qlint + typeGen + eval_compare loaded — starting smoke scenarios\n")
+    # Mirror mcp_server.server: never claim qlint loaded when the gate is off.
+    if not gate.enabled:
+        print(f"WARNING: lint gate disabled ({gate.reason or 'qlint.q_ unavailable'})")
+    print(f"{'qlint.q_' if gate.enabled else 'NO qlint.q_ (lint gate disabled)'}"
+          " + typeGen + eval_compare loaded — starting smoke scenarios\n")
     scenarios = [
         ("happy_path", scenario_happy_path),
         ("schema_aware_lint", scenario_schema_aware_lint),
