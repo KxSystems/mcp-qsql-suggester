@@ -3,7 +3,7 @@
 The HTTP client is replaced with a fake that records each request body, so
 no vLLM, q or pykx is involved. Covers the default single ``n=N`` request and
 ``MCP_QSQL_SPLIT_REQUESTS=1`` (N sequential ``n=1`` requests, for gateways
-that refuse ``n>1``).
+that refuse ``n>1``), plus the optional ``VLLM_API_KEY`` header.
 
 Tier 1, so no httpx either: CI installs pytest and nothing else. The fake
 response below mimics the two methods ``vllm_client`` calls on an
@@ -111,3 +111,13 @@ def test_split_with_n_1_is_unchanged(monkeypatch):
     _install(monkeypatch, fake, split=True)
     assert _run(n=1) == ["r1c0"]
     assert [b["n"] for b in fake.bodies] == [1]
+
+
+def test_no_authorization_header_without_api_key(monkeypatch):
+    monkeypatch.setattr(vllm_client, "_API_KEY", "")
+    assert "Authorization" not in vllm_client._headers()
+
+
+def test_api_key_is_sent_as_bearer(monkeypatch):
+    monkeypatch.setattr(vllm_client, "_API_KEY", "sk-test")
+    assert vllm_client._headers()["Authorization"] == "Bearer sk-test"

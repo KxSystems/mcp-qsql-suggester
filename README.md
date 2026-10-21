@@ -11,6 +11,10 @@ want to delegate q/kdb+ qSQL drafting to a specialist model while still
 catching structural errors — and reducing (not eliminating) the odds of
 a single unlucky sample — before returning code to the user.
 
+Self-consistency is the decoding method of [Wang et al., ICLR
+2023](https://arxiv.org/abs/2203.11171), which majority-votes over final
+answers; here the vote is over cross-seed execution results instead.
+
 The server exposes a single tool, `generate_qsql`. See
 [`mcp_server/README.md`](mcp_server/README.md) for tool semantics, the
 self-consistency clustering pipeline, environment variables, and

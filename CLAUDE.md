@@ -287,11 +287,11 @@ tier with `-m` is a usage error rather than a silent `0 passed, N skipped`
 resolves through `PATH` and may not be the env holding pykx.
 Full detail in [`tests/README.md`](tests/README.md).
 
-**Tier 1 — pure logic** (107 tests). No q, no kdb+ license, no pykx, no
+**Tier 1 — pure logic** (125 tests). No q, no kdb+ license, no pykx, no
 `qlint.q_`, no GPU. Covers `extract_qsql`, the self-consistency decision
 logic (round-cap validation, union-find, winning-cluster choice +
 tie-break, shortest-code pick, `ROUND_MIN_WEIGHT` thresholds), the
-`MCP_QSQL_QLINT` gate policy, the `vllm_client` request shaping (`n=N` vs `MCP_QSQL_SPLIT_REQUESTS`), and the skill renderer's case-A verdict
+`MCP_QSQL_QLINT` gate policy, the `vllm_client` request shaping (`n=N` vs `MCP_QSQL_SPLIT_REQUESTS`, optional `VLLM_API_KEY` header), and the skill renderer's case-A verdict
 claims (`.claude/skills/.../format_output.py`). The one tier every CI
 runs (`unit`).
 
@@ -347,6 +347,7 @@ another file. Add a variable there first, then here.
 | `VLLM_MODEL` | no | `qsql-qwen35-9b` | Served-model-name |
 | `VLLM_MAX_TOKENS` | no | `2048` | Per-call generation cap |
 | `VLLM_TIMEOUT_S` | no | `120` | httpx read timeout |
+| `VLLM_API_KEY` | no | unset | Sent as `Authorization: Bearer <key>` when set (authenticating gateway, or vLLM `--api-key`); unset sends no header |
 | `MCP_QSQL_SPLIT_REQUESTS` | no | unset | Set to `1` to draw each round's candidates as sequential `n=1` requests instead of one `n=N` request, for gateways that refuse `n>1`. Slower (prompt re-prefilled per request; caps are cumulative, so default caps = at most 16 requests) — see `mcp_server/README.md` for the trade-offs |
 | `MCP_QSQL_SC_ROUND_CAPS` | no | `4,8,16` | Self-consistency round-cap preset, fixed at process/session startup. Restricted to validated presets: a single cap (any N), `4,8`, or `4,8,16`. Ceiling model — a caller's `max_rounds` tool arg can only request fewer rounds, never more |
 | `MCP_QSQL_SC_TEMPERATURE` | no | `0.8` | Default sampling temperature for self-consistency candidates. Freely overridable per call via the tool's `temperature` arg |

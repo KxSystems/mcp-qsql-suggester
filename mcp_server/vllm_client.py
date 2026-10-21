@@ -24,6 +24,10 @@ _BASE_URL = os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1")
 _MODEL = os.environ.get("VLLM_MODEL", "qsql-qwen35-9b")
 _MAX_TOKENS = int(os.environ.get("VLLM_MAX_TOKENS", "2048"))
 _TIMEOUT_S = float(os.environ.get("VLLM_TIMEOUT_S", "120"))
+# Sent as "Authorization: Bearer <key>" when set, for endpoints behind an
+# authenticating gateway (or vLLM's own --api-key). Unset -> no header, which
+# is what a bare local vLLM expects. Never logged.
+_API_KEY = os.environ.get("VLLM_API_KEY", "").strip()
 # "1" -> draw n candidates as n sequential n=1 requests instead of one n=n
 # request. For OpenAI-compatible gateways that reject n>1 (e.g. because they
 # meter per completion). Anything else keeps the single n=n request.
@@ -36,6 +40,13 @@ if _SPLIT_RAW not in ("", "1"):
 _client: httpx.AsyncClient | None = None
 
 
+def _headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if _API_KEY:
+        headers["Authorization"] = f"Bearer {_API_KEY}"
+    return headers
+
+
 def _get_client() -> httpx.AsyncClient:
     global _client
     if _client is None:
@@ -44,7 +55,7 @@ def _get_client() -> httpx.AsyncClient:
         _client = httpx.AsyncClient(
             base_url=_BASE_URL,
             timeout=httpx.Timeout(connect=5.0, read=_TIMEOUT_S, write=10.0, pool=5.0),
-            headers={"Content-Type": "application/json"},
+            headers=_headers(),
         )
     return _client
 
