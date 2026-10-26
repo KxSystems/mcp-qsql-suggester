@@ -112,7 +112,12 @@ gated in order:
    (`DEFAULT_SC_SEEDS = (42, 43, 44)`), evaluates the candidate under a
    `system "T 3"` timeout via `@[value;code;{"ERR:",x}]`, and flags a
    result as degenerate (bare function / unexpected atom, via
-   `.eval.descVal`) if it isn't a real query output.
+   `.eval.descVal`) if it isn't a real query output. Each execution starts
+   from the same state (`qexec.isolated_candidate`): the seed's tables are
+   restored from a pristine copy first, and any root global the candidate
+   defined is deleted afterwards. Otherwise a candidate could pass only
+   because an earlier one defined a helper it uses, or agree with one only
+   because that one had filtered the shared table.
 
 Candidates that parse+lint+execute cleanly (non-degenerate, on **every**
 seed tested) are clustered by cross-seed output equivalence

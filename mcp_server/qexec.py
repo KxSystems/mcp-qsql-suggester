@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import contextmanager
 from pathlib import Path
 
 import pykx as kx
@@ -166,6 +167,55 @@ def build_dummy_tables(
 def drop_tables(names: list[str]) -> None:
     for name in names:
         _safe_delete(name)
+
+
+# Pristine copies of the current seed's dummy tables, kept outside the root
+# namespace: `snapshot_globals` / `cleanup_new_globals` only see root, so a
+# candidate's cleanup can never sweep them, and candidate code would have to
+# name this namespace to collide with it.
+_PRISTINE_NS = ".mcpqsql.pristine"
+
+
+def save_pristine(names: list[str]) -> None:
+    """Copy each freshly built table under ``_PRISTINE_NS`` for
+    ``isolated_candidate`` to restore from. Cheap: q copies on write, so this
+    and every restore share one set of 20-row columns until a candidate
+    amends its copy."""
+    for name in names:
+        if _NAME_RE.match(name):
+            kx.q(f"{_PRISTINE_NS}.{name}:{name}")
+
+
+def drop_pristine() -> None:
+    try:
+        kx.q("delete pristine from `.mcpqsql")
+    except Exception:
+        pass
+
+
+@contextmanager
+def isolated_candidate(table_names: list[str], result_var: str | None):
+    """Give one candidate execution a clean, identical starting state.
+
+    On entry, restores every table in ``table_names`` from its
+    ``save_pristine`` copy — an earlier candidate may have reassigned,
+    filtered or deleted one (``trade:select from trade where ...``). On exit,
+    deletes every root global the body created except ``result_var``, so a
+    helper one candidate defined (``f:{...}``) is not there for the next one
+    to lean on. Without both, a candidate could pass, or agree with its
+    neighbours, only because of what ran before it.
+
+    Root namespace only: ``.ns.x`` globals, and pre-existing globals a
+    candidate overwrites, are not restored.
+    """
+    for name in table_names:
+        if _NAME_RE.match(name):
+            kx.q(f"{name}:{_PRISTINE_NS}.{name}")
+    before = snapshot_globals()
+    try:
+        yield
+    finally:
+        cleanup_new_globals(before, {result_var} if result_var else set())
 
 
 def exec_capture(code: str, result_var: str, timeout_s: int = DEFAULT_TIMEOUT_S) -> dict:
