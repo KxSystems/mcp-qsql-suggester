@@ -185,6 +185,59 @@ def test_disabled_gate_skips_rather_than_passes_silently(lint_gate_disabled):
 
 
 # --------------------------------------------------------------------------- #
+# candidates of one call do not see each other's state
+#
+# Every candidate runs in the same embedded q, against the same seed's tables.
+# Both tests are parametrized over candidate order, because before
+# `qexec.isolated_candidate` the outcome depended on it: whichever candidate
+# ran first decided what the second one saw. Unique texts execute in order of
+# first appearance, so the completion list's order is the execution order.
+# --------------------------------------------------------------------------- #
+
+_DEFINES = "```q\naddOne:{x+1}; select addOne price from trade\n```"
+_BORROWS = "```q\nselect addOne price from trade\n```"
+
+
+@pytest.mark.parametrize("order", [(_DEFINES, _BORROWS), (_BORROWS, _DEFINES)],
+                         ids=["definer-first", "borrower-first"])
+def test_candidate_cannot_use_another_candidates_helper(fake_chat, generate, order):
+    """A helper global one candidate defines is gone before the next runs, so
+    a candidate that uses it without defining it fails on its own merits."""
+    fake_chat(list(order))
+    result = generate(instruction="Price plus one.")
+
+    by_text = {c["raw_completion"]: c for c in result["candidates"]}
+    assert by_text[_DEFINES]["exec_passed"] is True
+    assert by_text[_BORROWS]["exec_passed"] is False
+    assert by_text[_BORROWS]["cluster_id"] is None
+
+
+_EMPTIES = "```q\ntrade:0#trade; count trade\n```"
+_COUNTS = "```q\ncount trade\n```"
+
+
+@pytest.mark.parametrize("order", [(_EMPTIES, _COUNTS), (_COUNTS, _EMPTIES)],
+                         ids=["mutator-first", "reader-first"])
+def test_candidate_sees_pristine_tables(fake_chat, generate, order):
+    """A candidate that reassigns a schema table does not change what the next
+    candidate of that seed sees. The bare row-count literal is the witness:
+    it clusters with `count trade` only if that saw all NROWS rows."""
+    import pykx as kx
+    from mcp_server import loop as qsql_loop
+
+    nrows = f"```q\n{qsql_loop.SC_NROWS}\n```"
+    fake_chat([*order, nrows])
+    result = generate(instruction="Count the trades.")
+
+    by_text = {c["raw_completion"]: c for c in result["candidates"]}
+    assert all(c["exec_passed"] for c in by_text.values())
+    assert by_text[_COUNTS]["cluster_id"] == by_text[nrows]["cluster_id"]
+    assert by_text[_EMPTIES]["cluster_id"] != by_text[_COUNTS]["cluster_id"]
+    # The pristine copies are dropped with the tables.
+    assert kx.q("`pristine in key `.mcpqsql").py() is False
+
+
+# --------------------------------------------------------------------------- #
 # concurrent calls in one process (the HTTP transport's actual shape)
 # --------------------------------------------------------------------------- #
 

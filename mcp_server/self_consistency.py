@@ -88,9 +88,10 @@ _VALID_MULTI_ROUND_PRESETS = ((4, 8), (4, 8, 16))
 #
 # Only the captured results need this. Dummy tables never outlive the
 # locked `add_round` that builds them, and the helper globals candidate
-# code leaks are read only inside the locked `exec_capture`, so another
-# call sweeping them up early is harmless — which is why the snapshot-diff
-# in `cleanup_new_globals` is kept as-is rather than replaced.
+# code leaks are deleted as soon as that candidate's `exec_capture` returns
+# (`qexec.isolated_candidate`), so another call never sees them — which is
+# why the snapshot-diff in `cleanup_new_globals` is kept as-is rather than
+# replaced. The per-call sweep in `mcp_server.loop` is now only a backstop.
 _CALL_SEQ = itertools.count()
 _LIVE_BINDINGS: set[str] = set()
 
@@ -302,10 +303,12 @@ class ClusterState:
                     self.uniques[u].exec_err = f"dummy table build failed (seed={seed}): {e}"
                 continue
             try:
+                qexec.save_pristine(table_names)
                 for u in list(remaining):
                     uniq = self.uniques[u]
                     var = f"sc{self.call_id}_{u}_s{seed}"
-                    r = qexec.exec_capture(uniq.text, var, self.timeout_s)
+                    with qexec.isolated_candidate(table_names, var):
+                        r = qexec.exec_capture(uniq.text, var, self.timeout_s)
                     if not r["ok"]:
                         uniq.exec_err = r["err"]
                         remaining.discard(u)
@@ -317,6 +320,7 @@ class ClusterState:
                         remaining.discard(u)
             finally:
                 qexec.drop_tables(table_names)
+                qexec.drop_pristine()
         # Anything still in `remaining` after all seeds succeeded on every seed.
         for u in uniq_idxs:
             uniq = self.uniques[u]
