@@ -319,6 +319,7 @@ async def _single_shot_no_exec(
         "q_code": code,
         "passed": passed,
         "lint_gate": lint_gate_status(),
+        "request_mode": vllm_client.request_mode(),
         "rounds_used": 1,
         "candidates_generated": 1,
         "winning_candidate_index": 0 if passed else None,
@@ -487,6 +488,7 @@ async def _run_self_consistency(
 
         result.update({
             "lint_gate": lint_gate_status(),
+            "request_mode": vllm_client.request_mode(),
             "rounds_used": rounds_used,
             "candidates_generated": state.n_generated,
             "winning_cluster_size": winning.weight if winning else 0,

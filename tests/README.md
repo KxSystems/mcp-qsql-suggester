@@ -6,8 +6,8 @@ run is decided by what you have, not by what you choose.
 
 | Tier | Adds | Count | Where it lives | Runs in CI? |
 |---|---|---|---|---|
-| **1** Pure logic | pytest, nothing else | 125 | `test_extract.py`, `test_self_consistency.py`, `test_qlint_policy.py`, `test_format_output.py`, `test_vllm_client.py` | ✅ `unit` |
-| **2** Embedded q | pykx + a kdb+ licence | 74 | `test_pipeline_gates.py`, `test_eval_compare_skill.py` (`needs_q`) | ⚠️ only with a kdb+ licence secret |
+| **1** Pure logic | pytest, nothing else | 123 | `test_extract.py`, `test_self_consistency.py`, `test_qlint_policy.py`, `test_format_output.py`, `test_vllm_client.py` | ✅ `unit` |
+| **2** Embedded q | pykx + a kdb+ licence | 78 | `test_pipeline_gates.py`, `test_eval_compare_skill.py` (`needs_q`) | ⚠️ only with a kdb+ licence secret |
 | **3** Real qlint | a working `qlint.q_` | 6 | `test_pipeline_gates_qlint.py` (`needs_qlint`) | ❌ nobody's — see below |
 | **4** Live model | a vLLM serving the model | 3 + 1 | `mcp_server/smoke_test.py`, `mcp_server/protocol_test.py` | ❌ by hand only |
 
@@ -187,7 +187,7 @@ above under what it forks and why), one for tier 3, sharing their fixtures via
 fixtures, so `conftest.py` (loaded on every run, including tier-1-only ones)
 does not drag pykx into tier 1.
 
-**Tier 2** — `test_pipeline_gates.py` (22 tests) — the gates end to end with the model stubbed: a
+**Tier 2** — `test_pipeline_gates.py` (26 tests) — the gates end to end with the model stubbed: a
 candidate that parses and lints clean but raises at execution (`price+sym`,
 float + symbol) must leave no cluster; an unparseable candidate must be
 rejected at the first gate; a 3-1 split must finalize on the majority when the

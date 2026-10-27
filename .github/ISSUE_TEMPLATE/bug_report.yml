@@ -89,7 +89,7 @@ body:
         Self-hosters: all three. Client-only: your Python version is enough.
         pykx and vLLM are not declared in `pyproject.toml` (licensed and
         CUDA-specific respectively), so we cannot infer them.
-      placeholder: "python 3.12.x, pykx 3.x.x, vllm 0.27.1"
+      placeholder: "python 3.12.x, pykx 4.x.x, vllm 0.27.1"
     validations:
       required: true
 

@@ -1,4 +1,5 @@
-# Pinned server-side stack — the set verified working on 2026-08-13.
+# Pinned server-side stack — the set verified working on 2026-08-13
+# (pykx moved to 4.2.0 and re-verified, tiers 1-4, on 2026-10-27).
 # Only calling an already-running server instead? See requirements-client.txt.
 # Setting up the vLLM model host? That is a SEPARATE env: requirements-vllm.txt.
 #
@@ -18,4 +19,5 @@
 mcp==1.27.1        # 2.0 renamed streamablehttp_client -> streamable_http_client
 httpx==0.28.1
 starlette==1.0.0
-pykx==3.1.9        # licensed separately; install is pip, licence is not
+pykx==4.2.0        # licensed separately; install is pip, licence is not.
+                   # 4.x accepts kdb+ 4.x and KDB-X licences; 3.x rejects KDB-X.

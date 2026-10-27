@@ -102,7 +102,7 @@ to colleagues once your own server is up (see
   [`requirements-server.txt`](requirements-server.txt), *not* by
   `pip install -e .`: `pyproject.toml` deliberately does not declare it.
   The install is pip; what you have to supply separately is the **licence**
-  (a kdb+ licence, plus `QLIC` and `QHOME`). Verify with
+  (a kdb+ 4.x or KDB-X licence, plus `QLIC` and `QHOME`). Verify with
   `python -c "import pykx; print(pykx.__version__)"`.
 - **KX `qlint.q_`** — *optional, but recommended*; it powers the C9 lint
   gate. Licensed separately from this repo, so it is not shipped here. It is
@@ -409,7 +409,8 @@ chose.
 
 ### Launch
 
-The server listens on `0.0.0.0:9000` (endpoint path `/mcp`). Run it in
+The server listens on `0.0.0.0:9000` (endpoint path `/mcp`;
+`MCP_QSQL_HOST=127.0.0.1` for loopback only). Run it in
 a long-running session (tmux / systemd / your choice) so client
 connections survive shell disconnects:
 
@@ -443,6 +444,11 @@ variables" for the full list and defaults, and § "Tuning
 self-consistency execution" for what `MCP_QSQL_SC_SEEDS` /
 `MCP_QSQL_SC_NROWS` trade off.
 
+vLLM does not have to be on the same host. Point `VLLM_BASE_URL` at any
+OpenAI-compatible endpoint serving the model, remote or hosted, and add
+`VLLM_API_KEY=<token>` if it requires a bearer token; the MCP server then
+needs no GPU. See [`SELF_HOSTING.md`](SELF_HOSTING.md) § "Architecture".
+
 Verify on the host:
 
 ```bash
@@ -450,8 +456,9 @@ curl http://localhost:9000/health   # {"status":"ok"}
 curl -i http://localhost:9000/mcp   # HTTP 405/406 — server is up
 ```
 
-The server binds `0.0.0.0` with no authentication of its own and executes
-model-generated q in-process, so keep it on loopback or behind something
+The server binds `0.0.0.0` by default with no authentication of its own and
+executes model-generated q in-process, so keep it on loopback
+(`MCP_QSQL_HOST=127.0.0.1`) or behind something
 that authenticates, and don't expose it to callers you don't trust. To let
 colleagues reach it, see [`SELF_HOSTING.md`](SELF_HOSTING.md)
 § "Letting colleagues use your server".

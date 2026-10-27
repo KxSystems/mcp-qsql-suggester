@@ -65,6 +65,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 
 from mcp import ClientSession, StdioServerParameters
@@ -123,8 +124,12 @@ async def _call(args: argparse.Namespace) -> dict:
         arguments["include_candidates"] = False
 
     if args.stdio:
+        # Without env=, the SDK passes only HOME/LOGNAME/PATH/SHELL/TERM/USER,
+        # dropping QLINT_DIR, QHOME/QLIC and every VLLM_* / MCP_QSQL_* knob.
         params = StdioServerParameters(
-            command=sys.executable, args=["-m", "mcp_server.server", "--transport", "stdio"]
+            command=sys.executable,
+            args=["-m", "mcp_server.server", "--transport", "stdio"],
+            env=os.environ.copy(),
         )
         ctx = stdio_client(params)
     else:
