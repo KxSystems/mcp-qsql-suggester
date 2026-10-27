@@ -114,6 +114,7 @@ def test_identical_candidates_form_one_cluster(fake_chat, generate):
     assert result["winning_cluster_size"] == 4
     assert result["n_clusters"] == 1
     assert result["rounds_used"] == 1
+    assert result["request_mode"] == "n"
 
 
 def test_cosmetically_different_equivalent_code_clusters_together(

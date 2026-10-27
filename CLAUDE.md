@@ -120,7 +120,8 @@ tool-calling is unsupported — see
 per-layer verification, troubleshooting by layer); this section is the
 quick-reference.
 
-The server listens on `0.0.0.0:9000` (endpoint path `/mcp`). It is not
+The server listens on `0.0.0.0:9000` (endpoint path `/mcp`;
+`MCP_QSQL_HOST` sets the bind address). It is not
 auto-started; run once per host in a long-running session:
 
 ```bash
@@ -157,7 +158,7 @@ This example: caps self-consistency at 2 rounds (4 -> 8, skipping the
 default 3 seeds, and generates 50 rows per seed instead of the
 default 20. The startup log line (`qlint.q_ + typeGen + eval_compare
 loaded (round_caps=..., temperature=..., seeds=..., nrows=...,
-split_requests=...)`)
+split_requests=..., split_concurrency=...)`)
 echoes back the resolved config so you can confirm what actually took
 effect — an invalid env value falls back to its default with a
 logged warning rather than failing startup.
@@ -287,7 +288,7 @@ tier with `-m` is a usage error rather than a silent `0 passed, N skipped`
 resolves through `PATH` and may not be the env holding pykx.
 Full detail in [`tests/README.md`](tests/README.md).
 
-**Tier 1 — pure logic** (125 tests). No q, no kdb+ license, no pykx, no
+**Tier 1 — pure logic** (123 tests). No q, no kdb+ license, no pykx, no
 `qlint.q_`, no GPU. Covers `extract_qsql`, the self-consistency decision
 logic (round-cap validation, union-find, winning-cluster choice +
 tie-break, shortest-code pick, `ROUND_MIN_WEIGHT` thresholds), the
@@ -295,10 +296,10 @@ tie-break, shortest-code pick, `ROUND_MIN_WEIGHT` thresholds), the
 claims (`.claude/skills/.../format_output.py`). The one tier every CI
 runs (`unit`).
 
-**Tier 2 — the gates against real embedded q, model stubbed** (74 tests).
+**Tier 2 — the gates against real embedded q, model stubbed** (78 tests).
 Needs pykx + a licence, but **no qlint, no GPU and no vLLM**:
 `vllm_client.chat` is replaced with fixed completions, while parse,
-multi-seed execution and clustering all run for real (22 tests), plus the
+multi-seed execution and clustering all run for real (26 tests), plus the
 skill copy of `eval_compare.q` and its deliberate divergence from the server
 copy (52 tests). CI-able only where a kdb+ licence can be supplied as a
 secret.
@@ -342,13 +343,15 @@ another file. Add a variable there first, then here.
 | Name | Required | Default | Purpose |
 |---|---|---|---|
 | `QLINT_DIR` | see `MCP_QSQL_QLINT` | — | Dir containing `qlint.q_` |
+| `MCP_QSQL_HOST` | no | `0.0.0.0` | Bind address for `streamable-http` (ignored under stdio). `127.0.0.1` = loopback-only; the MCP SDK then also rejects any `Host` header other than `localhost` / `127.0.0.1` / `[::1]`, so a same-host proxy must forward one of those |
 | `MCP_QSQL_QLINT` | no | `auto` | `auto` = use qlint if `QLINT_DIR` yields a loadable `qlint.q_`, else disable the C9 gate with a startup warning and `lint_gate: "disabled"` on every response. `required` = fail startup instead (set this on a shared deployment to guarantee the gate is live). `off` = skip C9 even when available, e.g. to measure what it contributes over parse + execution |
 | `VLLM_BASE_URL` | no | `http://localhost:8000/v1` | vLLM endpoint |
 | `VLLM_MODEL` | no | `qsql-qwen35-9b` | Served-model-name |
 | `VLLM_MAX_TOKENS` | no | `2048` | Per-call generation cap |
 | `VLLM_TIMEOUT_S` | no | `120` | httpx read timeout |
 | `VLLM_API_KEY` | no | unset | Sent as `Authorization: Bearer <key>` when set (authenticating gateway, or vLLM `--api-key`); unset sends no header |
-| `MCP_QSQL_SPLIT_REQUESTS` | no | unset | Set to `1` to draw each round's candidates as sequential `n=1` requests instead of one `n=N` request, for gateways that refuse `n>1`. Slower (prompt re-prefilled per request; caps are cumulative, so default caps = at most 16 requests) — see `mcp_server/README.md` for the trade-offs |
+| `MCP_QSQL_SPLIT_REQUESTS` | no | unset | Set to `1` to draw each round's candidates as sequential `n=1` requests instead of one `n=N` request, for gateways that refuse `n>1`. Slower (prompt re-prefilled per request; caps are cumulative, so default caps = at most 16 requests) — see `mcp_server/README.md` for the trade-offs. An endpoint that ignores `n` (returns fewer choices) is auto-detected and switched to this mode with a one-time warning |
+| `MCP_QSQL_SPLIT_CONCURRENCY` | no | `1` | Max split-mode `n=1` requests in flight at once (either split source). `1` = sequential. Raise it for a server that batches concurrent requests (e.g. `mlx_lm.server`); keep `1` for a rate-limited gateway. No effect when the endpoint honours `n` |
 | `MCP_QSQL_SC_ROUND_CAPS` | no | `4,8,16` | Self-consistency round-cap preset, fixed at process/session startup. Restricted to validated presets: a single cap (any N), `4,8`, or `4,8,16`. Ceiling model — a caller's `max_rounds` tool arg can only request fewer rounds, never more |
 | `MCP_QSQL_SC_TEMPERATURE` | no | `0.8` | Default sampling temperature for self-consistency candidates. Freely overridable per call via the tool's `temperature` arg |
 | `MCP_QSQL_SC_SEEDS` | no | `42,43,44` | Comma-separated dummy-table seeds, fixed at process/session startup. No per-call arg. A single seed is accepted for debugging/latency but weakens the cross-seed agreement guarantee (see `mcp_server/README.md` § "Tuning self-consistency execution") |

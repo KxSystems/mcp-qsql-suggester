@@ -24,7 +24,9 @@ Two long-running processes. The runbook below puts both on one host, which
 is the simplest arrangement and the one every command assumes, but they
 talk over HTTP: set `VLLM_BASE_URL` to a remote endpoint and the MCP
 server needs no GPU at all (it still needs pykx and a kdb+ licence, since
-the gates run q in-process).
+the gates run q in-process). That endpoint can also be a hosted
+OpenAI-compatible service serving the model; set `VLLM_API_KEY` if it
+requires a bearer token.
 
 ```
   MCP client  (e.g. Claude Code, via .mcp.json)
@@ -62,7 +64,8 @@ transformers, which will fight with pykx and `mcp` if installed together.
 
 ### Hardware / OS
 
-- **Linux.** macOS and Windows are untested.
+- **Linux.** macOS and Windows are untested. On Apple Silicon, see
+  "Apple Silicon: mlx-lm instead of vLLM" under Step 3.
 - **One CUDA-capable GPU with ≥24 GB VRAM** for the recommended fp8 launch.
   Verified on an NVIDIA L4 24 GB: ~20 GB used, of which 7.3 GiB is KV cache
   (224,411 tokens) at `--max-model-len 32768`. No multi-GPU parallelism is
@@ -81,7 +84,7 @@ transformers, which will fight with pykx and `mcp` if installed together.
 |---|---|---|
 | **q/kdb+** | KX, under your q licence | Must be on `PATH` — `q --version` should work. |
 | **pykx** | `pip install -r requirements-server.txt`, which pins it; the licence is separate | Embedded q via `libq`. Deliberately **not** declared in this repo's `pyproject.toml`, so `pip install -e .` alone will not bring it in. Do not `pip install pykx` by hand first — the pinned install would then silently change the version you just chose. |
-| **A kdb+ licence** | KX | Needed for pykx to run embedded q. See "pykx says Unlicensed" in Troubleshooting — a headless host needs `$QLIC/kc.lic` on disk, not an env var. |
+| **A kdb+ licence** | KX | Needed for pykx to run embedded q. Either a kdb+ 4.x or a KDB-X licence (including KDB-X Community) works with the pinned pykx 4.x; pykx 3.x accepts only the former. See "pykx says Unlicensed" in Troubleshooting — a headless host needs `$QLIC/kc.lic` on disk, not an env var. |
 | **KX `qlint.q_`** | *Optional, but recommended.* Part of KX's AxLibraries, inside the KX Developer download ([code.kx.com/developer](https://code.kx.com/developer/), EULA-gated) | Powers the C9 lint gate. KX Analyst ships the same AxLibraries, but Developer is the smaller download and is sufficient. Install steps in [`README.md`](README.md) § Prerequisites; KX's own reference is [code.kx.com/analyst/libraries#download](https://code.kx.com/analyst/libraries/#download). Without it the server still runs with a two-gate stack — optional to keep a first run cheap, not because C9 is a formality; see [`mcp_server/README.md`](mcp_server/README.md) gate 2. |
 | **Python 3.10+** | distro / pyenv / conda | 3.12 is the verified version for both envs. |
 | **conda** (or venv / pyenv) | [docs.conda.io](https://docs.conda.io/) | Examples below use conda; with venv, activate the env and drop the `conda run` prefix. |
@@ -189,6 +192,45 @@ curl http://localhost:8000/v1/models     # expect "id":"qsql-qwen35-9b"
 Full detail, including hand-patching vLLM older than 0.27:
 [`mcp_server/VLLM.md`](mcp_server/VLLM.md).
 
+### Apple Silicon: mlx-lm instead of vLLM
+
+vLLM needs CUDA, so on a Mac the usual substitute is `mlx_lm.server`, mlx-lm's
+OpenAI-compatible server. **We do not test this path.** The notes below come
+from reading mlx-lm 0.32.2's source and from a user who ran it. Three things
+differ from the vLLM launch, and each one fails differently.
+
+1. **`model_type`: load fails.** The checkpoint's `config.json` declares
+   `"model_type": "qwen3_5_text"`, the name vLLM and transformers load it by.
+   mlx-lm has no mapping for that name and stops with `Model type qwen3_5_text
+   not supported`. Its `qwen3_5` implementation reads this flat config and
+   these weight names as they are, so edit that one field in a copy you own:
+
+   ```bash
+   hf download KxSystems/qsql-qwen35-9b --local-dir ./qsql-qwen35-9b
+   sed -i '' 's/"model_type": "qwen3_5_text"/"model_type": "qwen3_5"/' \
+       ./qsql-qwen35-9b/config.json
+   mlx_lm.server --model ./qsql-qwen35-9b --port 8000
+   ```
+
+   Edit a `--local-dir` copy, not the Hugging Face cache, whose files are
+   symlinks into a shared blob store. The edited `config.json` no longer
+   matches `SHA256SUMS`, which is expected. `--port 8000` keeps the default
+   `VLLM_BASE_URL` (mlx_lm.server's own default port is 8080).
+2. **Model name: requests fail or load the wrong thing.** mlx_lm.server
+   treats a request's `model` field as a path or repo to load, so the
+   default `VLLM_MODEL=qsql-qwen35-9b` makes it look for a model by that
+   name. Set `VLLM_MODEL=default_model`, which it maps to whatever `--model`
+   loaded.
+3. **`n`: silently fewer candidates, now detected.** mlx_lm.server ignores
+   `n` and returns one choice per request. The MCP server notices on the
+   first call, warns once, and draws every round as sequential `n=1`
+   requests from then on; responses report `request_mode: "split_auto"`.
+   Set `MCP_QSQL_SPLIT_REQUESTS=1` to skip that first wasted request. Those
+   requests are sequential by default, so a call's latency grows with its
+   candidate count; mlx_lm.server batches concurrent requests, so also set
+   `MCP_QSQL_SPLIT_CONCURRENCY=4` (or your round size) to send them together.
+   `MCP_QSQL_SC_ROUND_CAPS=4,8` cuts the worst case further.
+
 ## Step 4 — Create the MCP server env
 
 A second env, separate from the vLLM one.
@@ -245,9 +287,9 @@ tmux send-keys -t mcp-qsql "cd $(pwd) && \
 tmux attach -t mcp-qsql
 ```
 
-The server binds **`0.0.0.0:9000`**, endpoint path `/mcp`, with **no
+The server binds **`0.0.0.0:9000`** by default, endpoint path `/mcp`, with **no
 authentication of its own**, and it executes model-generated q in-process.
-Keep it on loopback or behind something that authenticates, and do not expose
+Keep it on loopback (`MCP_QSQL_HOST=127.0.0.1`) or behind something that authenticates, and do not expose
 it to callers you do not trust.
 
 `--transport` is the only CLI flag. Everything else is env-var config read
@@ -329,9 +371,13 @@ two arrangements worth using, and one to avoid:
   authenticate every request itself and forward only to `127.0.0.1:9000` —
   the server will trust whatever reaches it. Keep the port itself off any
   interface the proxy does not own.
-- **Do not just bind it to a routable interface.** It already binds
+- **Do not just bind it to a routable interface.** By default it binds
   `0.0.0.0`, so "exposing it" is only a firewall change away, and that is
-  exactly the thing not to do.
+  exactly the thing not to do. With an SSH tunnel or a same-host proxy, set
+  `MCP_QSQL_HOST=127.0.0.1` so the port is not reachable from other machines
+  at all. On a loopback address the MCP SDK rejects requests whose `Host`
+  header is not `localhost` / `127.0.0.1` / `[::1]`, so have the proxy forward
+  one of those rather than the public hostname.
 
 **Capacity.** One server process holds one embedded q session and every q
 operation is serialised through a single worker, so concurrent calls share
@@ -431,8 +477,12 @@ Full table with defaults: [`mcp_server/README.md`](mcp_server/README.md)
 | Variable | Why you would set it |
 |---|---|
 | `QLINT_DIR` | Where your `qlint.q_` is (Step 5). |
+| `MCP_QSQL_HOST` | `127.0.0.1` for a loopback-only listener (default `0.0.0.0`). See § "Letting colleagues use your server" for the proxy `Host`-header caveat. |
 | `MCP_QSQL_QLINT` | `required` to refuse to start without the lint gate; `off` to skip it even when present. Default `auto`. |
 | `VLLM_BASE_URL` / `VLLM_MODEL` | If vLLM is not on `localhost:8000` or you changed `--served-model-name`. |
+| `VLLM_API_KEY` | If that endpoint requires a bearer token (an authenticating gateway, a hosted service, or vLLM's own `--api-key`). Sent as `Authorization: Bearer <key>`; never logged. |
+| `MCP_QSQL_SPLIT_REQUESTS` | `1` if the endpoint refuses `n>1` in one request. Slower; see `mcp_server/README.md` for the trade-offs. An endpoint that ignores `n` instead (e.g. `mlx_lm.server`) is detected and switched automatically, with a warning. |
+| `MCP_QSQL_SPLIT_CONCURRENCY` | How many split-mode requests to send at once (default `1`, sequential). Raise it, e.g. to `4`, for a server that batches concurrent requests such as `mlx_lm.server`; keep `1` for a rate-limited gateway. |
 | `MCP_QSQL_SC_ROUND_CAPS` | Cheaper calls: `4,8` skips the 16-candidate round. Restricted to validated presets. |
 | `MCP_QSQL_SC_TEMPERATURE` | Sampling temperature for candidates (default `0.8`); also overridable per call. |
 | `MCP_QSQL_SC_SEEDS` / `MCP_QSQL_SC_NROWS` | Dummy-table shape for the execution gate. Fewer seeds is faster but weakens the cross-seed agreement guarantee — see `mcp_server/README.md` § "Tuning self-consistency execution". |
@@ -526,6 +576,7 @@ instance). Revert to the Step 3 config and re-test.
 | `ImportError: pykx` | pykx is not in the env you launched from. `pip install -r requirements-server.txt` into it. |
 | `QLINT_DIR is not set` **and startup fails** | You set `MCP_QSQL_QLINT=required`. Either install AxLibraries (Step 5) or drop back to `auto`. Under `auto` this is a warning, not a failure. |
 | pykx says "Unlicensed user" | pykx only reads a base64 licence env var from an interactive session; in any headless process it gives up before looking. Write the licence to `$QLIC/kc.lic` yourself — that is the path q resolves natively (it tries `$QLIC/kx.lic`, then `$QLIC/kc.lic`). |
+| `licence error: kc.lic` (or pykx unlicensed) with a **KDB-X** licence | pykx older than 4.0 cannot read KDB-X licences. Rebuild the env from `requirements-server.txt`, which pins pykx 4.x. |
 | `Address already in use` | An earlier server is still up. `tmux ls`, then `tmux kill-session -t <name>`. |
 
 ### Client shows no `kxqsql` at all
@@ -567,6 +618,7 @@ trailing slash.
 |---|---|
 | `lint_gate: "disabled"` | No usable `qlint.q_`; candidates were filtered on parse plus execution only. Expected if you skipped Step 5. |
 | `lint_gate: "disabled"` **but you did install qlint** | Read the startup warning: it names the reason. The usual cause is an incomplete AxLibraries install — `qlint.q_` is a ~2 KB loader stub that needs its `.qlint.*.q_` / `.ax*.q_` siblings **and** `ws/lib/<os>/*` copied into `ws/lib/` beside it. Point `QLINT_DIR` at the real `ws/` directory rather than at a copy of the single file. The server probes `.qlint.lintItem` at startup precisely because q reports the stub's failed sub-loads on stderr *without* failing the load. |
+| `request_mode: "split_auto"`, and calls are slower than expected | The endpoint ignores `n` (e.g. `mlx_lm.server`), so each round's candidates are drawn as sequential `n=1` requests. Results are correct; the cost is latency. Set `MCP_QSQL_SPLIT_REQUESTS=1` to skip the one wasted probe at startup, and consider `MCP_QSQL_SC_ROUND_CAPS=4,8`. |
 | `exec_ran=false` with a skip reason | Usually a malformed `table_schemas` — the execution gate cannot build a dummy table without a valid schema dict, so clustering has nothing to compare. |
 | `passed=false` with `'timeout` | A candidate exceeded q's per-call timeout against a 20-row dummy table. That is essentially always runaway recursion in the draft, not legitimate slowness. |
 | `passed=true` but the code is wrong | Expected and documented. `passed=true` means "ran without raising, and independent samples agreed" — not "matches your intent". See [`mcp_server/README.md`](mcp_server/README.md) § "Design stance" for why closing that gap requires caller-side verification against an independent reference. |

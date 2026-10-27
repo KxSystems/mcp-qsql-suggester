@@ -7,6 +7,7 @@ thinking by default (the fine-tune was trained without ``<think>`` blocks).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import TYPE_CHECKING
@@ -35,6 +36,42 @@ _SPLIT_RAW = os.environ.get("MCP_QSQL_SPLIT_REQUESTS", "").strip()
 SPLIT_REQUESTS = _SPLIT_RAW == "1"
 if _SPLIT_RAW not in ("", "1"):
     log.warning("MCP_QSQL_SPLIT_REQUESTS=%r is not '1'; leaving it off", _SPLIT_RAW)
+
+
+def _parse_concurrency(raw: str) -> int:
+    """``MCP_QSQL_SPLIT_CONCURRENCY``: a positive int, else 1 with a warning."""
+    if not raw:
+        return 1
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        log.warning("MCP_QSQL_SPLIT_CONCURRENCY=%r is not a positive integer; using 1", raw)
+        return 1
+    return value
+
+
+# How many split-mode n=1 requests may be in flight at once. 1 (the default)
+# keeps them sequential; raise it for a server that batches concurrent
+# requests (mlx_lm.server does), where it cuts a call's latency several-fold.
+SPLIT_CONCURRENCY = _parse_concurrency(
+    os.environ.get("MCP_QSQL_SPLIT_CONCURRENCY", "").strip()
+)
+# Set the first time an n>1 request comes back short (e.g. mlx_lm.server,
+# which ignores n and returns one choice). From then on this process draws
+# every round split, as if MCP_QSQL_SPLIT_REQUESTS=1, so the short request is
+# paid for once rather than once per round.
+_ignores_n = False
+
+
+def request_mode() -> str:
+    """How candidates are being drawn, for the response's ``request_mode``:
+    ``"n"`` (one n=N request per round), ``"split"`` (MCP_QSQL_SPLIT_REQUESTS=1)
+    or ``"split_auto"`` (the endpoint was found to ignore ``n``)."""
+    if SPLIT_REQUESTS:
+        return "split"
+    return "split_auto" if _ignores_n else "n"
 
 
 _client: httpx.AsyncClient | None = None
@@ -93,18 +130,67 @@ async def chat(
     winning cluster) can rely on list order.
 
     With ``MCP_QSQL_SPLIT_REQUESTS=1`` the ``n`` samples are instead drawn as
-    ``n`` sequential ``n=1`` requests (same return shape), for gateways that
-    refuse ``n>1``. Slower, and the prompt is prefilled once per request.
+    ``n`` separate ``n=1`` requests (same return shape), for gateways that
+    refuse ``n>1``: sequential by default, up to ``MCP_QSQL_SPLIT_CONCURRENCY``
+    at once otherwise. Slower, and the prompt is prefilled once per request.
+
+    An endpoint that silently ignores ``n`` (returns fewer than ``n`` choices)
+    is topped up the same way, with a one-time warning, and every later call
+    in this process goes straight to split mode.
     """
-    if SPLIT_REQUESTS and n > 1:
-        # Sequential, not concurrent: a failure raises exactly as the single
-        # request does, and a gateway with a request-rate limit never sees a
-        # burst. Each request re-prefills the prompt; the price of this mode.
+    global _ignores_n
+    if (SPLIT_REQUESTS or _ignores_n) and n > 1:
+        return await _post_split(messages, temperature, top_p, max_tokens, n)
+    out = await _post(messages, temperature, top_p, max_tokens, n)
+    if len(out) < n:
+        log.warning(
+            "endpoint returned %d of %d requested choices, so it likely ignores n; "
+            "topping up with sequential n=1 requests and drawing every later round "
+            "that way. Set MCP_QSQL_SPLIT_REQUESTS=1 to skip this probe",
+            len(out), n,
+        )
+        _ignores_n = True
+        out.extend(
+            await _post_split(messages, temperature, top_p, max_tokens, n - len(out))
+        )
+    return out
+
+
+async def _post_split(
+    messages: list[dict],
+    temperature: float,
+    top_p: float,
+    max_tokens: int | None,
+    count: int,
+) -> list[str]:
+    # Sequential by default: a failure raises exactly as the single request
+    # does, and a gateway with a request-rate limit never sees a burst. Each
+    # request re-prefills the prompt; the price of this mode.
+    if SPLIT_CONCURRENCY == 1:
         out: list[str] = []
-        for _ in range(n):
+        for _ in range(count):
             out.extend(await _post(messages, temperature, top_p, max_tokens, 1))
         return out
-    return await _post(messages, temperature, top_p, max_tokens, n)
+
+    # Concurrent: at most SPLIT_CONCURRENCY in flight. gather() returns in
+    # submission order, so list order is still generation order. On the first
+    # failure the requests not yet finished are cancelled and the error is
+    # raised, as the sequential loop stops at its failure.
+    sem = asyncio.Semaphore(SPLIT_CONCURRENCY)
+
+    async def _one() -> list[str]:
+        async with sem:
+            return await _post(messages, temperature, top_p, max_tokens, 1)
+
+    tasks = [asyncio.ensure_future(_one()) for _ in range(count)]
+    try:
+        results = await asyncio.gather(*tasks)
+    except BaseException:
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+    return [c for r in results for c in r]
 
 
 async def _post(

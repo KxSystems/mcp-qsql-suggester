@@ -45,7 +45,7 @@ Two consequences follow, and both are deliberate:
   and grant it on that basis.
 - **The MCP server performs no authentication or authorisation of its own, and
   terminates no TLS.** In `streamable-http` mode it binds `0.0.0.0:9000` at path
-  `/mcp`.
+  `/mcp` by default; `MCP_QSQL_HOST=127.0.0.1` restricts it to loopback.
 
 The supported deployment is therefore: **loopback, an SSH tunnel, or behind a
 reverse proxy that authenticates**, on a host whose other users you trust, and

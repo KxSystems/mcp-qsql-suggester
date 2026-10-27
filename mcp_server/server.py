@@ -4,8 +4,8 @@ Run as: ``python -m mcp_server.server [--transport stdio|streamable-http]``
 
 Default transport is ``stdio`` (per-session subprocess, the original model).
 Pass ``--transport streamable-http`` to run as a long-running HTTP service
-on ``0.0.0.0:9000`` (endpoint path ``/mcp``) — see CLAUDE.md for the
-multi-tenant launch workflow.
+on ``0.0.0.0:9000`` (endpoint path ``/mcp``; ``MCP_QSQL_HOST`` changes the
+bind address) — see CLAUDE.md for the multi-tenant launch workflow.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from mcp_server import vllm_client
 import argparse
 import asyncio
 import logging
+import os
 import sys
 
 from mcp.server.fastmcp import FastMCP
@@ -83,7 +84,11 @@ TOOL_DESCRIPTION = (
 
 # host/port are consulted only by the streamable-http transport; ignored for
 # stdio. Safe to set unconditionally so both modes work from the same object.
-mcp = FastMCP("qsql-generator", host="0.0.0.0", port=9000)
+# MCP_QSQL_HOST=127.0.0.1 gives a loopback-only listener. FastMCP then also
+# turns on DNS-rebinding protection, which rejects any Host header that is not
+# localhost / 127.0.0.1 / [::1] -- so a same-host proxy must forward one of those.
+HOST = os.environ.get("MCP_QSQL_HOST", "").strip() or "0.0.0.0"
+mcp = FastMCP("qsql-generator", host=HOST, port=9000)
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -178,7 +183,8 @@ def main() -> None:
         choices=["stdio", "streamable-http"],
         default="stdio",
         help="MCP transport. 'stdio' (default) for per-session subprocess; "
-             "'streamable-http' for long-running HTTP service on 0.0.0.0:9000.",
+             "'streamable-http' for long-running HTTP service on "
+             "0.0.0.0:9000 (bind address: MCP_QSQL_HOST).",
     )
     args = parser.parse_args()
 
@@ -209,11 +215,13 @@ def main() -> None:
 
     log.info(
         "%s + typeGen + eval_compare loaded (round_caps=%s, temperature=%.2f, "
-        "seeds=%s, nrows=%d, split_requests=%s); starting %s MCP server",
+        "seeds=%s, nrows=%d, split_requests=%s, split_concurrency=%d); "
+        "starting %s MCP server",
         "qlint.q_" if gate.enabled else "NO qlint.q_ (lint gate disabled)",
         _loop.SC_ROUND_CAPS, _loop.SC_TEMPERATURE, _loop.SC_SEEDS, _loop.SC_NROWS,
-        vllm_client.SPLIT_REQUESTS,
-        args.transport,
+        vllm_client.SPLIT_REQUESTS, vllm_client.SPLIT_CONCURRENCY,
+        f"{args.transport} on {HOST}:{mcp.settings.port}"
+        if args.transport == "streamable-http" else args.transport,
     )
     mcp.run(transport=args.transport)
 
