@@ -90,7 +90,12 @@ Build `/tmp/preshape.q` in two passes:
   `.claude/skills/qsql-coder/verify_gen.q`; alignment is not
   required there because shape derivation is value-independent for
   standard q queries — both dummies share the same schema → meta
-  mapping.)
+  mapping.) Gate 3 now also appends literal rows harvested from the
+  candidates' code (`mcp_server/literal_pool.q`); pre-derive does not,
+  and needs no change for it: literal rows add rows, never columns or
+  types, so the shape this emits is the shape gate 3 sees — even when
+  the reference's filter matches nothing here, an empty `select` keeps
+  its `meta`.
 - **Pass 2** appends `.eval.descSchema` (pre-derive-only helper),
   per-call `genTable0[...]` lines (one per `table_schemas` entry)
   and the priority-1 reference on `.eval.tmpRes:`. Uses single-quoted

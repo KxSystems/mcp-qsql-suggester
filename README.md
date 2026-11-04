@@ -25,16 +25,18 @@ customer-UX guidance.
 Measured on a held-out set of 1078 qSQL tasks, holding the model fixed and
 varying only the decoding strategy. A pass means the generated q executed against
 dummy tables built from the task's declared schemas and its result matched the
-task's reference implementation over the same tables; anything that failed to
-parse, raised, timed out or returned a degenerate result counts as a failure. The
-harness evaluated every task, so the denominator is 1078 exactly.
+task's reference implementation over the same tables, on all three seeded table
+draws; anything that failed to parse, raised, timed out or returned a degenerate
+result counts as a failure. On 9 tasks the reference itself raises on the dummy
+tables; those count as failures for every row, so the denominator is 1078
+throughout.
 
 | decoding | pass | rate |
 |---|---|---|
-| single sample, greedy (temperature 0) | 606/1078 | 56.2% |
-| single sample, temperature 0.8 | 555/1078 | 51.5% |
-| **self-consistency (this server), temperature 0.8** | **690/1078** | **64.0%** |
-| *pass@16 ceiling — any of 16 samples passes* | *850/1078* | *78.8%* |
+| single sample, greedy (temperature 0) | 554/1078 | 51.4% |
+| single sample, temperature 0.8 | 509/1078 | 47.2% |
+| **self-consistency (this server), temperature 0.8** | **619/1078** | **57.4%** |
+| *pass@16 ceiling — any of 16 samples passes* | *791/1078* | *73.4%* |
 
 The comparison is paired — every row ran on the same tasks — and the margin
 against either single-sample baseline is far outside sampling noise. The
@@ -90,7 +92,7 @@ to colleagues once your own server is up (see
 
 ### If you are hosting the server
 
-- **q/kdb+** on `PATH` (`q --version` should work), with `QHOME` set as
+- **q/kdb+** on `PATH` (`echo '-1 "q ok"; exit 0;' | q -q` should print `q ok`), with `QHOME` set as
   your q install requires — the `/qsql-coder` skill's Bash-verify step
   runs q locally and inherits your environment rather than guessing a
   layout.
@@ -486,11 +488,12 @@ QLINT_DIR=<dir> PYTHONPATH=. python -m mcp_server.protocol_test
 │   ├── server.py          — FastMCP entrypoint; registers generate_qsql + /health
 │   ├── loop.py            — async run_generate_loop (qwen n= sampling → self-consistency clustering)
 │   ├── self_consistency.py — clustering engine: dedupe, union-find over cross-seed equivalence, winning cluster + round thresholds
-│   ├── qexec.py           — execution primitives (pykx + dummy tables, multi-seed exec+capture, degenerate check, global cleanup)
-│   ├── eval_compare.q     — mcp_server's own .eval.cmp / .eval.eqEps / .eval.descVal / .eval.fmtCols (standalone copy, and deliberately STRICTER than the skill's: see either file's header)
+│   ├── qexec.py           — execution primitives (pykx + dummy tables, literal harvest, multi-seed exec+capture, degenerate / vacuous checks, global cleanup)
+│   ├── eval_compare.q     — mcp_server's own .eval.cmp / .eval.eqEps / .eval.descVal / .eval.fmtCols / .eval.isVacuous (standalone copy, and deliberately STRICTER than the skill's: see either file's header)
 │   ├── vllm_client.py     — async httpx client to vLLM /v1/chat/completions (chat(..., n=...) for multi-sample requests)
 │   ├── type_gen.q         — server-side typeGen / parseSchema0 / genTable0 (self-consistency exec + pre-derive)
-│   ├── type_gen.py        — thin loader exposing TYPE_GEN_STMTS = ["\\l type_gen.q"]
+│   ├── literal_pool.q     — literal-aware dummy rows: harvest constants from candidate code, append rows drawn from them (genTableLit); byte-identical to the skill's copy
+│   ├── type_gen.py        — thin loader exposing TYPE_GEN_STMTS = ["\\l type_gen.q", "\\l literal_pool.q"]
 │   ├── smoke_test.py      — loop-only regression
 │   ├── protocol_test.py   — full MCP stdio round-trip
 │   ├── README.md          — self-consistency clustering, env vars, internal module map
@@ -505,10 +508,12 @@ QLINT_DIR=<dir> PYTHONPATH=. python -m mcp_server.protocol_test
 │   └── qsql_query.py      — call generate_qsql directly, no Claude in the loop (HTTP or --stdio); see SELF_HOSTING.md § Step 8
 ├── tests/
 │   ├── test_extract.py               — tier 1: extract_qsql over raw model completions
-│   ├── test_self_consistency.py      — tier 1: round-cap presets, union-find, winning cluster + tie-break, shortest-code pick
+│   ├── test_self_consistency.py      — tier 1: round-cap presets, union-find, winning cluster + tie-break, shortest-code pick, vacuous results never merging
+│   ├── test_literal_pool_copies.py   — tier 1: the two literal_pool.q copies (and .eval.isVacuous) stay identical
 │   ├── test_qlint_policy.py          — tier 1: the MCP_QSQL_QLINT gate policy (auto / required / off)
 │   ├── test_format_output.py         — tier 1: the skill renderer's case-A verdict claims match its own candidate counts
 │   ├── test_pipeline_gates.py        — tier 2: the gates against real embedded q, model stubbed (needs pykx + a licence)
+│   ├── test_vacuous_filter.py        — tier 2: filters on out-of-pool literals, literal rows, vacuous results never a confident pass
 │   ├── test_pipeline_gates_qlint.py  — tier 3: claims about qlint's own output (additionally needs a working qlint.q_)
 │   ├── conftest.py                   — the needs_q / needs_qlint markers and their skip logic
 │   └── README.md                     — what each tier covers, and what CI cannot reach
@@ -521,8 +526,9 @@ QLINT_DIR=<dir> PYTHONPATH=. python -m mcp_server.protocol_test
     ├── qsql-coder/
     │   ├── SKILL.md           — full flow: params → MCP → gate-aware Bash-verify → case A/B/C/D
     │   ├── pre-derive.md      — dev-only A/B-test protocol (expected-schema hint); not auto-loaded
-    │   ├── verify_gen.q       — verify-tuned dummy generator (1000 rows / 3 syms / 2h span) for Bash-verify reference compare
-    │   ├── eval_describe.q    — .eval.fmtCols / .eval.descVal (single-value shape introspection; shared with pre-derive)
+    │   ├── verify_gen.q       — verify-tuned dummy generator (1000 rows / 3 syms / 2h span, + NLIT0 literal rows) for Bash-verify reference compare
+    │   ├── literal_pool.q     — byte-identical copy of mcp_server/literal_pool.q; harvests from both the draft and the reference (.lit.fromFiles)
+    │   ├── eval_describe.q    — .eval.fmtCols / .eval.descVal / .eval.isVacuous (single-value shape introspection; shared with pre-derive)
     │   ├── eval_compare.q     — .eval.cmp / .eval.eqEps / .eval.tNorm / .eval.flatNumeric / .eval.diag / .eval.wrapInfo (tolerant compare incl. temporal-resolution normalization, + divergence and wrap diagnostics)
     │   └── scripts/
     │       └── format_output.py — Markdown renderer; single source of truth, used by both skills
@@ -550,23 +556,23 @@ Detail behind
 above.
 
 Every row ran on the same tasks, so the comparison is paired: the pipeline wins
-105 tasks and loses 21 against the greedy sample (exact McNemar *p* ~= 1 x
-10^-14), and wins 162 against 27 versus the first sample of its own
-temperature-0.8 draw (*p* ~= 1 x 10^-24). The greedy row is deterministic — two
+90 tasks and loses 25 against the greedy sample (exact McNemar *p* ~= 8 x
+10^-10), and wins 140 against 30
+versus the first sample of its own temperature-0.8 draw (*p* ~= 3 x 10^-18). The greedy row is deterministic — two
 independent runs of it produced byte-identical completions on all 1078 tasks.
 
 Three things in that table matter more than the headline:
 
-- **Turning the temperature up costs 4.7 points on its own** (56.2% -> 51.5%,
+- **Turning the temperature up costs 4.2 points on its own** (51.4% -> 47.2%,
   greedy against one sample at 0.8). Diverse candidates are not free, and the
   clustering has to pay that back before it earns anything. The net over the
-  better single-sample baseline is +7.8 points.
-- **The wrapper closes 34% of the distance to the pass@16 ceiling.** A majority
-  vote over the model's own samples recovers about a third of what a perfect
+  better single-sample baseline is +6.0 points.
+- **The wrapper closes 27% of the distance to the pass@16 ceiling.** A majority
+  vote over the model's own samples recovers over a quarter of what a perfect
   oracle picker would.
 - **Early stopping cost nothing here.** Finalising a round when its winning
   cluster is unanimous at 4, or reaches weight 6 at 8, cut sample generation by
-  34% while passing the same number of tasks as running all 16 — so the `4,8,16`
+  30% while passing the same number of tasks as running all 16 — so the `4,8,16`
   round-cap default is not only a latency knob.
 
 Two caveats, because this is an offline reconstruction rather than a recording of

@@ -136,13 +136,47 @@ def preflight_check(table_schemas: dict[str, str] | None, nrows: int,
     return None
 
 
+def harvest_literals(code: str):
+    """Constants in ``code``'s parse tree (``.lit.harvest`` in
+    ``literal_pool.q``), as a pykx general list — dates, timestamps,
+    symbols, strings, with safe sub-expressions such as ``.z.d-1``
+    constant-folded. Never raises: code that does not parse, or a fold that
+    trips the timeout, harvests nothing. Folding only ever calls the
+    whitelisted pure primitives in ``.lit.ok``; see that file's header."""
+    _ensure_typegen()
+    kx.q('system "T 1"')
+    try:
+        return kx.q("{@[.lit.harvest;x;{()}]}", kx.CharVector(code))
+    except Exception as e:
+        log.warning("literal harvest failed: %s", e)
+        return kx.q("()")
+    finally:
+        kx.q('system "T 0"')
+
+
+def union_literals(a, b):
+    """Distinct union of two harvested-literal lists (pykx)."""
+    return kx.q("{distinct x,y}", a, b)
+
+
+def count_literals(lits) -> int:
+    return int(kx.q("count", lits).py())
+
+
 def build_dummy_tables(
-    table_schemas: dict[str, str], nrows: int, seed: int
+    table_schemas: dict[str, str], nrows: int, seed: int,
+    literals=None, literal_rows: int = 0,
 ) -> list[str]:
     """Create dummy tables for one ``seed``. Caller must have already
     validated ``table_schemas`` via ``validate_table_schemas``. Returns the
     created table names (== ``table_schemas.keys()``); caller is responsible
     for dropping them (``drop_tables``) once that seed's candidates are done.
+
+    ``literals`` (a ``harvest_literals`` union) and ``literal_rows > 0``
+    append that many rows drawn from the harvested values to each table
+    (``genTableLit``), so a filter on a value outside the default pools
+    selects some rows instead of none. With either unset the tables are
+    exactly ``genTable0``'s.
 
     Raises ``RuntimeError`` if ``parseSchema0`` can't parse a schema string —
     this should not happen for schemas that passed ``validate_table_schemas``,
@@ -152,13 +186,22 @@ def build_dummy_tables(
     _ensure_typegen()
     kx.q(f'system "S {int(seed)}"')
     kx.q(f"NROWS0:{int(nrows)}")
+    pool = None
+    if literals is not None and literal_rows > 0 and count_literals(literals):
+        excl = set(table_schemas)
+        for sdef in table_schemas.values():
+            excl.update(kx.q("{key parseSchema0 x}", kx.CharVector(sdef)).py())
+        pool = kx.q(".lit.pools", literals, kx.SymbolVector(sorted(str(e) for e in excl)))
     created: list[str] = []
     for name, sdef in table_schemas.items():
         schema = kx.q("parseSchema0", kx.CharVector(sdef))
         if len(schema) == 0:
             drop_tables(created)
             raise RuntimeError(f"parseSchema0 returned empty for {name!r}: {sdef!r}")
-        tbl = kx.q("genTable0", schema, int(nrows))
+        if pool is None:
+            tbl = kx.q("genTable0", schema, int(nrows))
+        else:
+            tbl = kx.q("genTableLit", schema, int(nrows), int(literal_rows), pool)
         kx.q("set", kx.SymbolAtom(name), tbl)
         created.append(name)
     return created
@@ -259,6 +302,18 @@ def is_degenerate_result(result_var: str) -> bool:
     bare symbol atom — almost certainly not the intended query output."""
     desc = describe_result(result_var)
     return desc.startswith(_DEGENERATE_DESC_PREFIXES)
+
+
+def is_vacuous_result(result_var: str) -> bool:
+    """True if the value bound at ``result_var`` carries no data: an empty
+    table / dict / list, every column all-null, or a null atom
+    (``.eval.isVacuous``). Unlike ``is_degenerate_result`` this does NOT
+    disqualify a candidate — an empty result can be the right answer on
+    dummy data — it only stops two empty results counting as agreement."""
+    _ensure_evalcmp()
+    if not _NAME_RE.match(result_var):
+        raise ValueError(f"unsafe result_var name: {result_var!r}")
+    return bool(kx.q(f".eval.isVacuous[{result_var}]"))
 
 
 def results_equal(var_a: str, var_b: str) -> bool:

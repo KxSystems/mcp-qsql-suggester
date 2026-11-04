@@ -22,3 +22,19 @@
   99h=type r; $[.eval.isKeyed r; "keyed table. keys: ",(", " sv string keys r),". cols: ",.eval.fmtCols value r; "dict (",(string count r)," entries)"];
   0>type r; "scalar ",string type r;
   "list type ",string type r]};
+
+/ Vacuous = the result carries no data the query could have computed: an
+/ empty table / keyed table / dict / list, or one whose every column is
+/ entirely null, or a null atom. Two vacuous results always compare equal,
+/ so clustering must not read their equality as agreement — that is the
+/ "every candidate returned an empty table, so every candidate agreed"
+/ failure mode (literal_pool.q has the cause). A non-null atom
+/ is NOT vacuous even when it is 0: `count` legitimately returns 0, and an
+/ `exec sum` over an empty selection returning 0 is the residual this
+/ deliberately leaves alone rather than guess at.
+.eval.allNull:{[c] $[0>type c; null c; 0=count c; 1b; type[c] in 98 99h; .eval.isVacuous c; 0h=type c; all .z.s each c; all null c]};
+.eval.isVacuous:{[r] $[
+  98h=type r; $[0=count r; 1b; all .eval.allNull each value flip r];
+  .eval.isKeyed r; .eval.isVacuous value r;
+  99h=type r; $[0=count r; 1b; .eval.isVacuous value r];
+  .eval.allNull r]};

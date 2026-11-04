@@ -123,7 +123,7 @@ Call the MCP tool `mcp__kxqsql__generate_qsql` with the gathered
 parameters plus `include_candidates=false` — every field this skill reads
 below (`q_code`, `passed`, `lint_gate`, `final_issues`, `rounds_used`,
 `candidates_generated`, `winning_cluster_size`, `winning_cluster_fraction`,
-`tie_occurred`) is at the top level of the return; the per-candidate
+`tie_occurred`, `winning_result_vacuous`) is at the top level of the return; the per-candidate
 `candidates` list is debugging/audit detail this skill never reads, so
 omitting it saves tokens on this side. Then branch on the structured
 return.
@@ -142,6 +142,7 @@ intent has to be checked separately by Bash-verify against a reference
 |---|---|
 | Uses a **high-risk named idiom**: `wavg`, `wsum`, `mavg`, `msum`, `mmax`/`mmin`/`mcount`/`mdev`/`mmedian`, `fby`, `xexp`, `prds`, `sums`/`sum` mixed with `wavg`-family | **Bash-verify** (these idioms condense multiple ops into one call; easy for qwen to over-apply or combine with redundant arithmetic) |
 | Functional form `![...]` or `?[...]` with nested parse-tree aggregates | **Bash-verify** (parse-tree composition is fragile) |
+| `winning_result_vacuous=true` — the returned draft's result was empty (or all-null) on every dummy dataset the server tried | **Bash-verify** — whatever the cluster numbers say, nothing about this draft was tested against data: its agreement is agreement on code text alone. The verify data is built from the constants in both the draft and your reference, so it often reaches rows the server's did not |
 | `winning_cluster_fraction < 0.6` (weak majority — the winning cluster carries under 60% of the candidates generated) or `tie_occurred=true` | **Bash-verify** — qwen was split across answers, so verify against an independent reference. `0.6` rather than `1.0`: a lone dissenter out of 8 is normal sampling noise at temperature 0.8, not a signal, and verifying every one of those spends a q process on nothing |
 | **User provided a q snippet / canonical form / formula** in the prompt | **Bash-verify** — even when no other trigger fires. The priority-1 reference is free (no need to draft), and catching divergence is high-value. A reference you don't use is a reference wasted. |
 | None of the above | **Trust the gate.** No verification needed. Present q_code + verdict directly. |
@@ -164,11 +165,18 @@ your side. Check **lazily**, only after a trigger fires, so the common case-A
 path costs no extra Bash call:
 
 ```bash
-q --version 2>&1 | head -2
+echo '-1 "q ok"; exit 0;' | timeout -k 5 10 q -q 2>&1 | head -2
 ```
 
-If that fails — no `q` on PATH, no licence, non-zero exit — Bash-verify is not
-available and this becomes an honest case A rather than a silent one. Render
+q is reachable only if that prints `q ok`. Do **not** use `q --version`: q has
+no such flag, so it opens a REPL and waits for input — it hangs whenever stdin
+is open, and when it does return it prints nothing, so it proves neither that
+q runs nor that the licence is good. (The `echo ... | q` form is safe here
+because the snippet has no backticks; the rule below against piping applies to
+q code with symbols in it.)
+
+If that fails — no `q` on PATH, no licence, anything other than `q ok` —
+Bash-verify is not available and this becomes an honest case A rather than a silent one. Render
 case A with `"verification_unavailable": "no_q"`. Do **not** just fall through
 to the "None of the above" row: that prints a reason list beginning *"no
 high-risk idiom"*, which is false about code that has one. With the field set
@@ -292,8 +300,8 @@ in play" (generic); qualifiers like *user-provided* / *priority-1* /
 *priority-3* narrow to a specific one.
 
 Compare results (not code) against the same dummy data. **Write the q
-to a temp file (`/tmp/verify_*.q`) and run
-`timeout -k 5 60 q /tmp/verify_*.q -q </dev/null`** — do NOT pipe via
+to files in a fresh `mktemp -d` directory and run
+`timeout -k 5 60 q verify.q -q </dev/null` from inside it** — do NOT pipe via
 `echo '...' | q -q` or `q -q <<EOF` heredoc. Reason: q code is full of
 backtick-prefixed symbols (`` `sym ``, `` `time ``, etc.); on many
 shells the backticks inside `echo` / heredoc trigger command
@@ -303,7 +311,7 @@ sidesteps shell quoting entirely. The trailing **`</dev/null`** is
 load-bearing: after running the file, q tries to enter the REPL and
 read from stdin; without `</dev/null` (and without a trailing
 `exit 0;` in the script), q hangs waiting for input until the
-`timeout` above fires. Don't use `q -q < /tmp/verify_*.q`
+`timeout` above fires. Don't use `q -q < verify.q`
 (stdin-redirect, no file arg) either — that mode parses each line as a
 top-level expression and breaks multi-line function definitions.
 
@@ -321,15 +329,33 @@ later, which q cannot ignore. `timeout` is GNU coreutils — present on
 every Linux this project supports; on a box without it, drop the prefix
 rather than let the verify fail on `command not found`.
 
-Build `/tmp/verify.q` in two passes: pass 1 concatenates three skill-
-local `.q` files — `verify_gen.q` (gives `NROWS0`, `typeGen`,
-`parseSchema0`, `genTable0`), `eval_describe.q` (`.eval.fmtCols` +
-`.eval.descVal`), `eval_compare.q` (`.eval.cmp` + `.eval.flatNumeric`
-+ `.eval.diag` + `.eval.wrapInfo`). Pass 2 appends the call-specific verification via
-single-quoted heredoc so the backticks in q syms survive shell
-quoting.
+**Why a fresh directory, never fixed `/tmp/verify*.q` paths**: two runs at once
+(parallel agents, or two users on one host) would overwrite each other's files
+between writing and loading, and the verify would then compare some other
+case's code — silently. A file another user already created at a fixed path
+cannot be overwritten at all. Both were seen in practice. Every path below is
+therefore relative to the `mktemp -d` directory the block `cd`s into.
 
-Resolve those three files through `$SKILL_ROOT` as defined below —
+Build `verify.q` in two passes: pass 1 concatenates four skill-
+local `.q` files — `verify_gen.q` (gives `NROWS0`, `NLIT0`, `typeGen`,
+`parseSchema0`, `genTable0`), `literal_pool.q` (`.lit.fromFiles`,
+`genTableLit`), `eval_describe.q` (`.eval.fmtCols` + `.eval.descVal` +
+`.eval.isVacuous`), `eval_compare.q` (`.eval.cmp` + `.eval.flatNumeric`
++ `.eval.diag` + `.eval.wrapInfo`). Pass 2 writes qwen's draft and the
+reference to one file each, `verify_qwen.q` and `verify_ref.q`,
+and appends the call-specific verification — all via single-quoted
+heredocs so the backticks in q syms survive shell quoting.
+
+Why the draft and the reference live in their own files: the dummy tables
+get extra rows drawn from the constants both of them name (dates, syms,
+`.z.d-1`, ...), and `.lit.fromFiles` reads those constants out of the two
+files before the tables are built. Without that, a filter on a value the
+fixed pools lack — a 2030 date, `` `BTCUSD `` — is empty on both sides, and
+empty compares equal to empty, so the verify reports a match it never
+tested. Each file is then `\l`-loaded, which runs it exactly as the inline
+code used to run.
+
+Resolve those four files through `$SKILL_ROOT` as defined below —
 never through a bare relative path, `git rev-parse`, or
 `$CLAUDE_PLUGIN_ROOT`. This skill's directory is
 `${CLAUDE_SKILL_DIR}`: Claude Code substitutes that exact token in
@@ -349,39 +375,51 @@ root it needs rather than relying on an earlier one.
 
 ```bash
 SKILL_ROOT="${CLAUDE_SKILL_DIR}"
+V=$(mktemp -d "${TMPDIR:-/tmp}/qsql-verify.XXXXXX") && cd "$V" || exit 1
 {
   cat "$SKILL_ROOT/verify_gen.q"
+  cat "$SKILL_ROOT/literal_pool.q"
   cat "$SKILL_ROOT/eval_describe.q"
   cat "$SKILL_ROOT/eval_compare.q"
-} > /tmp/verify.q
-cat >> /tmp/verify.q <<'PYEOF'
-system "S 42";
-/ build dummy table(s) — one genTable0 line per entry in table_schemas
-trade: genTable0[parseSchema0["`time`sym`price`size!`t`s`f`j"]; NROWS0];
+} > verify.q
+cat > verify_qwen.q <<'PYEOF'
 qwen_result: <qwen q_code>;
+PYEOF
+cat > verify_ref.q <<'PYEOF'
 reference_result: <reference q code from priority 1/2/3>;
+PYEOF
+cat >> verify.q <<'PYEOF'
+system "S 42";
+/ one entry per table_schemas entry: table name -> schema string
+schemas:(enlist `trade)!enlist "`time`sym`price`size!`t`s`f`j";
+lit:.lit.fromFiles[("verify_qwen.q";"verify_ref.q"); schemas];
+{[lit;t;s] t set genTableLit[parseSchema0 s; NROWS0; NLIT0; lit]}[lit]'[key schemas; value schemas];
+\l verify_qwen.q
+\l verify_ref.q
 strict: qwen_result ~ reference_result;
 soft:   .eval.cmp[qwen_result; reference_result];
-show `strict`soft!(strict; soft);        / 11b = clean match; 01b = shape-wrap only; 00b = real divergence
+vacuous: .eval.isVacuous[qwen_result] and .eval.isVacuous reference_result;
+show `strict`soft`vacuous!(strict; soft; vacuous);  / strict/soft: 11b = clean match; 01b = shape-wrap only; 00b = real divergence
 if[(not strict) and not soft; .eval.diag[qwen_result; reference_result]];
 if[(not strict) and soft; .eval.wrapInfo[qwen_result; reference_result]];
 exit 0;
 PYEOF
-timeout -k 5 60 q /tmp/verify.q -q </dev/null
+timeout -k 5 60 q verify.q -q </dev/null
 ```
 
 The two-pass split is deliberate: pass 1 needs `$SKILL_ROOT`
-interpolation (unquoted) for the three `cat` arguments; pass 2 needs
+interpolation (unquoted) for the four `cat` arguments; pass 2 needs
 backtick protection (single-quoted heredoc) for q syms in the per-call
 code. Building both into one quoted heredoc would block `$SKILL_ROOT`
 interpolation; unquoted would let backticks trigger command
-substitution. The `{ cat; cat; cat; } > file` pattern sidesteps both.
-After pass 2, `/tmp/verify.q` is a single q script that q parses
-end-to-end; semantically identical to using `\l` plus inline code.
+substitution. The `{ cat; cat; cat; cat; } > file` pattern sidesteps both.
+After pass 2, `verify.q` is a single q script that q parses
+end-to-end, loading the two code files at the `\l` lines.
 
 Note: load order matters — `.eval.diag` / `.eval.wrapInfo` (in `eval_compare.q`) call
 `.eval.descVal` (in `eval_describe.q`), so `eval_describe.q` must
-precede `eval_compare.q` in the `cat` sequence above.
+precede `eval_compare.q` in the `cat` sequence above; and `literal_pool.q`
+must follow `verify_gen.q`, whose `typeGen` and 2h literal-row span it uses.
 
 Verify dummy is tuned for grouped-query rigor (1000 rows, 3 syms
 ``` `AAPL`MSFT`GOOG ```, 2h timestamp span — each (sym, 5-min bucket)
@@ -389,7 +427,10 @@ cell carries ~14 rows on average; enough density for `wavg` / `avg` /
 `wsum` divergences to surface). Gate-3 dummy (`mcp_server/type_gen.q`,
 20 rows / 10 syms / 10h) is deliberately different — its purpose is
 fast runtime safety on the server, not semantic-divergence detection
-on the skill side. The two are intentionally decoupled.
+on the skill side. The two are intentionally decoupled. Both add the same
+kind of literal rows (`literal_pool.q`, byte-identical in both places):
+`NLIT0` = 1000 here, inside the same 2h span, so a filter on a 2030 date
+or a crypto sym finds rows at the density above rather than none.
 
 ### Layered compare: `strict` vs `soft`
 
@@ -425,6 +466,17 @@ impossible — strict implies soft):
 | `1b` | `1b` | clean match, identical bytes | **Case B** (no idiom note) |
 | `0b` | `1b` | values agree but wrap differs (col reorder / keyed wrap / col rename / temporal resolution) | **Case B + idiom note** explaining the wrap difference — `.eval.wrapInfo` fires automatically |
 | `0b` | `0b` | real semantic divergence | **Case C** — `.eval.diag` fires automatically |
+
+**Read `vacuous` first.** `vacuous=1b` means both results are empty (or
+all-null) even with the literal rows — so `strict` / `soft` compared nothing
+with nothing, and a `11b` there is not a match. Do not report case B on it:
+render **case A with `"verification_unavailable": "vacuous_verify"`** (or
+case D with the same field, on the rewrite path). Before settling for that,
+check the reason is not yours — a schema string that does not match the
+tables the code queries makes every result empty for a reason that is
+fixable. If only ONE side is vacuous, `vacuous` is `0b` and the compare is
+real: that is case C, and `.eval.diag`'s "likely empty filter" hint names
+the side.
 
 `.eval.diag` only fires on the third outcome (both `0b`). It prints
 both shapes, numeric ranges, magnitude ratio, and heuristic hints
@@ -496,7 +548,7 @@ Then pick the case from the MCP return + your verify outcome:
 
 | case | when |
 |---|---|
-| **A** | `passed=true`; no Bash-verify triggered (no high-risk idiom, no functional form, `winning_cluster_fraction >= 0.6` with no tie, no user reference — note this admits a plurality, so case A is no longer proof of unanimity) — **or** a trigger did fire but `q` is unreachable, in which case also set `verification_unavailable: "no_q"` so the verdict does not claim the trigger was absent |
+| **A** | `passed=true`; no Bash-verify triggered (no high-risk idiom, no functional form, `winning_cluster_fraction >= 0.6` with no tie, no user reference — note this admits a plurality, so case A is no longer proof of unanimity) — **or** a trigger did fire but `q` is unreachable, in which case also set `verification_unavailable: "no_q"` so the verdict does not claim the trigger was absent — **or** Bash-verify ran and printed `vacuous=1b`, in which case set `verification_unavailable: "vacuous_verify"` |
 | **B** | `passed=true`; Bash-verified; **`soft=1b`** (qwen's values match the reference). Two sub-cases:<br>• **B-clean** — `strict=1b`: identical bytes; `idiom_note` optional.<br>• **B-wrap** — `strict=0b, soft=1b`: values agree but col-order / keyed-wrap / col-name / temporal-resolution differ; `idiom_note` **required** to explain the wrap (`.eval.wrapInfo` prints both `meta`s — read the axis off it). |
 | **C** | `passed=true`; Bash-verified; **`strict=0b` AND `soft=0b`** (real divergence). `.eval.diag` ran automatically — read its output to write `divergence_symptom`. |
 | **D** | `passed=false`; no self-consistency cluster survived gating |
@@ -544,6 +596,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/format_output.py" <<'__QSQL_FORMAT_END__'
   "rounds_used": 1,
   "candidates_generated": 4,
   "winning_cluster_size": 4,
+  "winning_result_vacuous": false, // copy the MCP's field verbatim
   "lint_gate": "kx_qlint_c9",     // copy the MCP's field verbatim; when it is
                                   // "disabled" the verdict says so, because the
                                   // server had no usable qlint.q_ and filtered
@@ -560,12 +613,14 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/format_output.py" <<'__QSQL_FORMAT_END__'
   "opus_could_write": null,       // bool — case D only
   "basis_label": null,            // free text e.g. "the instruction plus schema" — case D1 only
 
-  "verification_unavailable": null,  // null | "no_q" — case A and D only.
+  "verification_unavailable": null,  // null | "no_q" | "vacuous_verify" — case A and D only.
                                   // Replaces the verdict's reason clause when
                                   // the reference check was IMPOSSIBLE rather
-                                  // than unnecessary. Set it only for the
-                                  // unreachable-q path above; the sibling
-                                  // skill owns the other value ("quick_mode").
+                                  // than unnecessary. "no_q" for the
+                                  // unreachable-q path above, "vacuous_verify"
+                                  // when Bash-verify printed vacuous=1b; the
+                                  // sibling skill owns the other value
+                                  // ("quick_mode").
                                   // Rejected on cases B and C, which are the
                                   // verified cases by definition.
 
@@ -597,7 +652,8 @@ instruction"*, *"my own independent translation"*.
 | D | + `final_issues` (list), `opus_could_write` (bool); if `opus_could_write=true`: + `suggested_code`, `basis_label` |
 
 `verification_unavailable` is required on **either** case whenever a
-Bash-verify trigger fired and `q` was unreachable — case A because its reason
+Bash-verify trigger fired and `q` was unreachable (`"no_q"`), or the verify
+ran and printed `vacuous=1b` (`"vacuous_verify"`) — case A because its reason
 list would otherwise deny the trigger, case D because its fallback sentence
 would otherwise blame the instruction. It is optional (and meaningless)
 anywhere else.

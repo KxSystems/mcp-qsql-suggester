@@ -41,6 +41,7 @@ def _add(
     *,
     weight: int = 1,
     valid: bool = True,
+    vacuous: bool = False,
     first_orig: int | None = None,
 ) -> int:
     """Append a unique candidate. ``weight`` is expressed by giving it that
@@ -52,7 +53,7 @@ def _add(
     orig_idxs = list(range(start, start + weight))
     st.uniques.append(UniqueCandidate(
         uniq_idx=uniq_idx, text=text, orig_idxs=orig_idxs,
-        parse_lint_ok=valid, valid=valid,
+        parse_lint_ok=valid, valid=valid, vacuous=vacuous,
     ))
     st.candidates.extend([None] * weight)  # only len() is ever read here
     return uniq_idx
@@ -377,3 +378,66 @@ def test_n_generated_counts_raw_completions():
     _add(st, "aaa", weight=3)
     _add(st, "bbb", weight=1)
     assert st.n_generated == 4
+
+
+# --------------------------------------------------------------------------- #
+# vacuous results: empty == empty is not agreement
+# --------------------------------------------------------------------------- #
+
+def test_vacuous_uniques_do_not_merge_even_when_equal():
+    """Two different texts that both returned an empty table compare equal
+    under `.eval.cmp`, and before this rule that equality made them one
+    cluster — the "every candidate agreed on nothing" failure. They must stay
+    apart, so the fraction reflects that nothing was compared."""
+    st = _state()
+    a = _add(st, "select from t where date=2030.01.01", vacuous=True)
+    b = _add(st, "select price from t where date=2030.01.01", vacuous=True)
+    _equate(st, a, b)
+    w = st.winning_cluster()
+    assert w.n_clusters == 2
+    assert w.weight == 1
+    assert w.tie_occurred is True
+    assert w.vacuous is True
+
+
+def test_vacuous_unique_does_not_join_a_non_vacuous_cluster():
+    st = _state()
+    a = _add(st, "select from t", weight=2)
+    b = _add(st, "select from t where 0b", vacuous=True)
+    _equate(st, a, b)
+    w = st.winning_cluster()
+    assert w.n_clusters == 2
+    assert w.members == [a]
+    assert w.vacuous is False
+
+
+def test_identical_vacuous_completions_keep_their_weight():
+    """Byte-identical completions are one unique — that is agreement on the
+    code, not on an empty result — so the weight stands; the winner is
+    flagged vacuous instead."""
+    st = _state()
+    _add(st, "select from t where 0b", weight=4, vacuous=True)
+    w = st.winning_cluster()
+    assert w.weight == 4
+    assert w.vacuous is True
+
+
+def test_non_vacuous_winner_is_not_flagged():
+    st = _state()
+    _add(st, "select from t", weight=3)
+    _add(st, "select from t where 0b", vacuous=True)
+    assert st.winning_cluster().vacuous is False
+
+
+def test_vacuous_winner_never_finalizes_a_round_early():
+    """Weight 4 meets the round-of-4 threshold, but a vacuous winner's
+    weight was never tested against data: keep generating."""
+    st = _state()
+    assert st.meets_threshold(4, weight=4, is_last_round=False) is True
+    assert st.meets_threshold(4, weight=4, is_last_round=False, vacuous=True) is False
+    assert st.meets_threshold(8, weight=8, is_last_round=False, vacuous=True) is False
+
+
+def test_vacuous_winner_still_finalizes_on_the_last_round():
+    st = _state()
+    assert st.meets_threshold(4, weight=1, is_last_round=True, vacuous=True) is True

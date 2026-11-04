@@ -31,6 +31,22 @@ Terminology, mirroring the offline clustering analysis this ports:
     raw candidate total, just contribute nothing to any cluster's weight.
   - "cluster": a maximal set of mutually execution-equivalent (across ALL
     seeds) valid uniques, found via union-find.
+  - "vacuous": a valid unique whose result was empty / all-null on EVERY
+    seed (``qexec.is_vacuous_result``). It stays valid — an empty result can
+    be the right answer — but it never joins another unique's cluster: two
+    empty results always compare equal, so their equality says nothing
+    about whether the candidates agree. Byte-identical completions still
+    share one unique and its weight; that is agreement on the code itself.
+
+Literal-aware dummy rows (``literal_rows > 0``): before executing, the
+constants in every parsed candidate's code are harvested
+(``qexec.harvest_literals``) and rows drawn from them are appended to the
+dummy tables (``mcp_server/literal_pool.q``), so a filter on a value the
+default pools lack — a 2030 date, a crypto sym — selects some rows rather
+than none. The harvest is the union over ALL rounds; when a later round
+adds a new value, the tables change, so every earlier candidate is
+re-executed on the new tables before re-clustering — clustering is only
+meaningful when every pair was compared on identical data.
 """
 
 from __future__ import annotations
@@ -41,10 +57,10 @@ import itertools
 from mcp_qsql_shared.extract import extract_qsql
 
 # NOTE: `_parse_safe` / `check_c9_qlint` / `qexec` are imported lazily inside
-# the methods that use them (`add_round`, `_exec_new_uniques`,
-# `_results_equal_all_seeds`, `cleanup`) rather than at module scope. All
-# three pull in pykx, and importing them here would make the module's pure
-# decision logic — `parse_round_caps`, `UnionFind`, `winning_cluster`,
+# the methods that use them (`add_round`, `_harvest`, `_reexec_all`,
+# `_exec_new_uniques`, `_results_equal_all_seeds`, `cleanup`) rather than at
+# module scope. All three pull in pykx, and importing them here would make
+# the module's pure decision logic — `parse_round_caps`, `UnionFind`, `winning_cluster`,
 # `pick_shortest`, `meets_threshold` — unimportable without embedded q,
 # which puts `tests/` out of reach of any CI runner lacking a kdb+ license.
 # Deferring also keeps `mcp_server.loop`'s PYKX_THREADING=1 preamble ahead
@@ -170,6 +186,7 @@ class UniqueCandidate:
     valid: bool = False
     exec_err: str | None = None
     degenerate_desc: str | None = None
+    vacuous: bool = False
 
     @property
     def weight(self) -> int:
@@ -183,6 +200,10 @@ class WinningCluster:
     weight: int
     n_clusters: int
     tie_occurred: bool
+    # Every member's result was empty / all-null on every seed — the winner
+    # was never actually tested against data. Only ever a single unique,
+    # since vacuous uniques do not cluster with anything.
+    vacuous: bool = False
 
 
 class ClusterState:
@@ -202,12 +223,20 @@ class ClusterState:
         seeds: tuple[int, ...],
         nrows: int,
         timeout_s: int,
+        literal_rows: int = 0,
     ) -> None:
         self.table_schemas = table_schemas
         self.schema_names = schema_names
         self.seeds = seeds
         self.nrows = nrows
         self.timeout_s = timeout_s
+        self.literal_rows = literal_rows
+        # Union of harvested literals (pykx list) and its size; None until
+        # the first harvest. `rebuilds` counts how often a later round grew
+        # the union and forced every earlier candidate to re-execute.
+        self._literals = None
+        self.n_literals = 0
+        self.rebuilds = 0
         self.candidates: list[Candidate] = []
         self.uniques: list[UniqueCandidate] = []
         self._text_to_uniq: dict[str, int] = {}
@@ -276,20 +305,71 @@ class ClusterState:
                     lint_issues=first.lint_issues, uniq_idx=uniq_idx,
                 ))
 
+        grew = self._harvest(new_uniq_idxs)
+        executed_before = any(
+            u.parse_lint_ok for u in self.uniques if u.uniq_idx not in new_uniq_idxs
+        )
+        if grew and executed_before:
+            self._reexec_all()
+            return
         execable = [u for u in new_uniq_idxs if self.uniques[u].parse_lint_ok]
         if execable:
             self._exec_new_uniques(execable)
         self._cluster_new_uniques(new_uniq_idxs)
 
+    def _harvest(self, new_uniq_idxs: list[int]) -> bool:
+        """Fold the new uniques' literals into the union; True if it grew.
+        Harvests every unique that parsed — a lint failure cannot execute,
+        but the value it filters on is still evidence of what the task
+        names."""
+        if self.literal_rows <= 0:
+            return False
+        from mcp_server import qexec
+
+        lits = self._literals
+        for u in new_uniq_idxs:
+            if not self.candidates[self.uniques[u].orig_idxs[0]].parse_ok:
+                continue
+            h = qexec.harvest_literals(self.uniques[u].text)
+            lits = h if lits is None else qexec.union_literals(lits, h)
+        if lits is None:
+            return False
+        n = qexec.count_literals(lits)
+        grew = n > self.n_literals
+        self._literals, self.n_literals = lits, n
+        return grew
+
+    def _reexec_all(self) -> None:
+        """Rebuild on the current literal union and re-execute + re-cluster
+        every executable unique, so all pairs are compared on one dataset."""
+        from mcp_server import qexec
+
+        self.rebuilds += 1
+        qexec.drop_tables(self._bound_vars)
+        _LIVE_BINDINGS.difference_update(self._bound_vars)
+        self._bound_vars = []
+        self._equal.clear()
+        execable = [u.uniq_idx for u in self.uniques if u.parse_lint_ok]
+        for u in execable:
+            uniq = self.uniques[u]
+            uniq.valid, uniq.exec_err, uniq.degenerate_desc, uniq.vacuous = False, None, None, False
+        if execable:
+            self._exec_new_uniques(execable)
+        self._cluster_new_uniques(execable)
+
     def _exec_new_uniques(self, uniq_idxs: list[int]) -> None:
         from mcp_server import qexec
 
         remaining = set(uniq_idxs)
+        vacuous_seeds = dict.fromkeys(uniq_idxs, 0)
         for seed in self.seeds:
             if not remaining:
                 break
             try:
-                table_names = qexec.build_dummy_tables(self.table_schemas, self.nrows, seed)
+                table_names = qexec.build_dummy_tables(
+                    self.table_schemas, self.nrows, seed,
+                    literals=self._literals, literal_rows=self.literal_rows,
+                )
             except Exception as e:
                 # `run_generate_loop` already preflight-checks table_schemas
                 # against the first seed before self-consistency mode is
@@ -318,6 +398,8 @@ class ClusterState:
                     if qexec.is_degenerate_result(var):
                         uniq.degenerate_desc = qexec.describe_result(var)
                         remaining.discard(u)
+                    elif qexec.is_vacuous_result(var):
+                        vacuous_seeds[u] += 1
             finally:
                 qexec.drop_tables(table_names)
                 qexec.drop_pristine()
@@ -326,6 +408,7 @@ class ClusterState:
             uniq = self.uniques[u]
             if uniq.exec_err is None and uniq.degenerate_desc is None:
                 uniq.valid = True
+                uniq.vacuous = vacuous_seeds[u] == len(self.seeds)
 
     def _cluster_new_uniques(self, new_uniq_idxs: list[int]) -> None:
         new_valid = [u for u in new_uniq_idxs if self.uniques[u].valid]
@@ -365,7 +448,8 @@ class ClusterState:
         valid_idxs = [u.uniq_idx for u in self.uniques if u.valid]
         uf = UnionFind(len(self.uniques))
         for (i, j), eq in self._equal.items():
-            if eq:
+            # A vacuous unique never merges: empty == empty is not agreement.
+            if eq and not (self.uniques[i].vacuous or self.uniques[j].vacuous):
                 uf.union(i, j)
         clusters: dict[int, list[int]] = {}
         for u in valid_idxs:
@@ -390,12 +474,14 @@ class ClusterState:
         tied_roots = [r for r, w in weights.items() if w == max_weight]
         tie_occurred = len(tied_roots) > 1
         winning_root = min(tied_roots, key=lambda r: min_orig[r])
+        members = clusters[winning_root]
         return WinningCluster(
             root=winning_root,
-            members=clusters[winning_root],
+            members=members,
             weight=max_weight,
             n_clusters=len(clusters),
             tie_occurred=tie_occurred,
+            vacuous=all(self.uniques[u].vacuous for u in members),
         )
 
     def pick_shortest(self, members: list[int]) -> UniqueCandidate:
@@ -405,9 +491,16 @@ class ClusterState:
             key=lambda u: (len(u.text), u.orig_idxs[0]),
         )
 
-    def meets_threshold(self, cap: int, weight: int, is_last_round: bool) -> bool:
+    def meets_threshold(self, cap: int, weight: int, is_last_round: bool,
+                        vacuous: bool = False) -> bool:
+        """Whether a round may finalize. A vacuous winner never finalizes
+        early: its weight is agreement on code text that was never tested
+        against data, and a further round is the one remaining chance of a
+        candidate (or a harvested literal) that makes the data discriminate."""
         if is_last_round:
             return True
+        if vacuous:
+            return False
         min_weight = ROUND_MIN_WEIGHT.get(cap)
         if min_weight is None:
             return True
