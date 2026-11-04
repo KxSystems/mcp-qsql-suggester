@@ -215,11 +215,12 @@ def main() -> None:
 
     log.info(
         "%s + typeGen + eval_compare loaded (round_caps=%s, temperature=%.2f, "
-        "seeds=%s, nrows=%d, split_requests=%s, split_concurrency=%d); "
+        "seeds=%s, nrows=%d, literal_rows=%d, split_requests=%s, "
+        "split_concurrency=%d); "
         "starting %s MCP server",
         "qlint.q_" if gate.enabled else "NO qlint.q_ (lint gate disabled)",
         _loop.SC_ROUND_CAPS, _loop.SC_TEMPERATURE, _loop.SC_SEEDS, _loop.SC_NROWS,
-        vllm_client.SPLIT_REQUESTS, vllm_client.SPLIT_CONCURRENCY,
+        _loop.SC_LITERAL_ROWS, vllm_client.SPLIT_REQUESTS, vllm_client.SPLIT_CONCURRENCY,
         f"{args.transport} on {HOST}:{mcp.settings.port}"
         if args.transport == "streamable-http" else args.transport,
     )

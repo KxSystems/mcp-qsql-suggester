@@ -33,7 +33,8 @@ the pip half of that.
 
 ### Self-hosting the MCP server
 
-- **q/kdb+** on `PATH` — `q --version` must succeed — with `QHOME` set as
+- **q/kdb+** on `PATH` — `echo '-1 "q ok"; exit 0;' | q -q` must print `q ok`
+  (not `q --version`: q has no such flag and hangs in its REPL) — with `QHOME` set as
   your q install requires; Bash-verify inherits it rather than guessing.
 - **Python 3.10+** — the `/qsql-coder` skill calls
   `.claude/skills/qsql-coder/scripts/format_output.py` (stdlib-only).
@@ -157,7 +158,7 @@ This example: caps self-consistency at 2 rounds (4 -> 8, skipping the
 16-candidate round), lowers sampling temperature to 0.6, keeps the
 default 3 seeds, and generates 50 rows per seed instead of the
 default 20. The startup log line (`qlint.q_ + typeGen + eval_compare
-loaded (round_caps=..., temperature=..., seeds=..., nrows=...,
+loaded (round_caps=..., temperature=..., seeds=..., nrows=..., literal_rows=...,
 split_requests=..., split_concurrency=...)`)
 echoes back the resolved config so you can confirm what actually took
 effect — an invalid env value falls back to its default with a
@@ -189,16 +190,25 @@ map. Summary of the self-consistency pipeline inside `run_generate_loop`:
    execution (`mcp_server.qexec`) against a dummy table built per
    `table_schemas` entry (`mcp_server.type_gen.TYPE_GEN_STMTS`) across
    seeds (default `(42, 43, 44)`, `MCP_QSQL_SC_SEEDS`) with
-   `MCP_QSQL_SC_NROWS` rows per seed (default `20`), under a `system
+   `MCP_QSQL_SC_NROWS` rows per seed (default `20`), plus
+   `MCP_QSQL_SC_LITERAL_ROWS` rows (default `100`) drawn from the constants
+   harvested from every candidate's parse tree (`mcp_server/literal_pool.q`
+   — the fixed pools cannot hold a 2030 date or a crypto sym, and a filter on
+   one would otherwise be empty for every candidate), under a `system
    "T 3"` timeout via
    `@[value;code;{"ERR:",x}]`. A candidate invalid on ANY seed (raises,
    times out, or produces a degenerate result — bare function / unexpected
-   atom via `.eval.descVal`) is excluded from clustering.
+   atom via `.eval.descVal`) is excluded from clustering. A later round that
+   harvests a new literal rebuilds the tables and re-executes every earlier
+   candidate.
 3. **Cluster**: candidates that agree (`.eval.cmp`,
    `mcp_server/eval_compare.q`) on EVERY seed tested join the same
    cluster (`mcp_server.self_consistency`, union-find). The winning
    cluster (largest total weight) is the answer; the shortest-code
-   candidate within it is returned.
+   candidate within it is returned. A result empty or all-null on every
+   seed (`.eval.isVacuous`) never joins anyone's cluster — empty equals
+   empty, which is not agreement — never finalizes a round early, and is
+   reported as `winning_result_vacuous` when it wins.
 
 **`eval_compare.q` exists twice and the two copies deliberately differ.**
 `mcp_server/eval_compare.q` serves clustering above;
@@ -288,18 +298,20 @@ tier with `-m` is a usage error rather than a silent `0 passed, N skipped`
 resolves through `PATH` and may not be the env holding pykx.
 Full detail in [`tests/README.md`](tests/README.md).
 
-**Tier 1 — pure logic** (123 tests). No q, no kdb+ license, no pykx, no
+**Tier 1 — pure logic** (139 tests). No q, no kdb+ license, no pykx, no
 `qlint.q_`, no GPU. Covers `extract_qsql`, the self-consistency decision
 logic (round-cap validation, union-find, winning-cluster choice +
-tie-break, shortest-code pick, `ROUND_MIN_WEIGHT` thresholds), the
+tie-break, shortest-code pick, `ROUND_MIN_WEIGHT` thresholds, vacuous
+results never merging), the two `literal_pool.q` copies staying identical, the
 `MCP_QSQL_QLINT` gate policy, the `vllm_client` request shaping (`n=N` vs `MCP_QSQL_SPLIT_REQUESTS`, optional `VLLM_API_KEY` header), and the skill renderer's case-A verdict
 claims (`.claude/skills/.../format_output.py`). The one tier every CI
 runs (`unit`).
 
-**Tier 2 — the gates against real embedded q, model stubbed** (78 tests).
+**Tier 2 — the gates against real embedded q, model stubbed** (104 tests).
 Needs pykx + a licence, but **no qlint, no GPU and no vLLM**:
 `vllm_client.chat` is replaced with fixed completions, while parse,
-multi-seed execution and clustering all run for real (26 tests), plus the
+multi-seed execution and clustering all run for real (26 tests), filters on
+out-of-pool literals, joins and vacuous results (26 tests), plus the
 skill copy of `eval_compare.q` and its deliberate divergence from the server
 copy (52 tests). CI-able only where a kdb+ licence can be supplied as a
 secret.
@@ -356,6 +368,7 @@ another file. Add a variable there first, then here.
 | `MCP_QSQL_SC_TEMPERATURE` | no | `0.8` | Default sampling temperature for self-consistency candidates. Freely overridable per call via the tool's `temperature` arg |
 | `MCP_QSQL_SC_SEEDS` | no | `42,43,44` | Comma-separated dummy-table seeds, fixed at process/session startup. No per-call arg. A single seed is accepted for debugging/latency but weakens the cross-seed agreement guarantee (see `mcp_server/README.md` § "Tuning self-consistency execution") |
 | `MCP_QSQL_SC_NROWS` | no | `20` | Rows generated per seed per dummy table, fixed at process/session startup. No per-call arg |
+| `MCP_QSQL_SC_LITERAL_ROWS` | no | `100` | Extra rows per seed per dummy table drawn from the constants harvested from the candidates' code (`mcp_server/literal_pool.q`), so a filter on a value the fixed pools lack selects rows instead of none. `0` = off (pre-fix tables). Fixed at process/session startup |
 | `MCP_RUNTIME_EXEC` | no | `1` | Set `0` to skip execution entirely (debug only) — collapses the call to a single parse+lint-only candidate, since clustering has nothing to compare without execution |
 | `MCP_QSQL_RETRIEVE_EXPECTED_SCHEMA` | no | unset | Set to `1` to gate the env-var shape-injection fallback on. Only meaningful under stdio transport (per-session subprocess env); leave unset on the long-running HTTP server |
 | `MCP_QSQL_INJECT_EXPECTED_SCHEMA` | no | unset | Out-of-band shape hint, read on each request when `MCP_QSQL_RETRIEVE_EXPECTED_SCHEMA=1`. Set per-case by the batch driver in the stdio MCP subprocess env |

@@ -73,6 +73,16 @@ typeGen[`g]:{ x?0Ng };
 typeGen[`x]:{ x?0x0ff };
 typeGen[`z]:{ asc `datetime$(2024.06.01T00:00:00.000)+x?1.0 };
 
+/ -
+/ The other axis no range can fix: a filter on a VALUE these pools do not
+/ hold at all (a 2030 date, `BTCUSD, an exchange code like `XQQ) matches
+/ nothing however wide a range is chosen, because a task can always name a
+/ value outside it. That is handled by mcp_server/literal_pool.q, which
+/ appends rows drawn from the constants in the candidates' own code — and,
+/ for whatever it cannot reach, by .eval.isVacuous in eval_compare.q, which
+/ stops an empty result counting as agreement. These pools are unchanged;
+/ genTable0 below is still the default part of every dummy table.
+/ -
 / Deliberately NOT changed while doing the above, so the change stays one
 / idea: `s` still draws from ten non-null symbols. Admitting a null would
 / make `null`/`not null` filters discriminate too, but it also adds a null

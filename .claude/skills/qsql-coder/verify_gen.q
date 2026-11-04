@@ -34,6 +34,20 @@
 / Residual, and accepted: a narrow LATE-day window (`0D16:20 0D16:30`)
 / still falls outside the 2h span and compares empty vs empty. Widening to
 / reach it is exactly the density trade this file exists to refuse.
+/ -
+/ LITERAL ROWS. Fixed pools cannot hold a value the task names and they
+/ lack (a 2030 date, a crypto sym), and a filter on one is empty vs empty
+/ here exactly as it is in gate 3. So Bash-verify, like gate 3, loads
+/ literal_pool.q after this file and appends NLIT0 rows drawn from the
+/ constants in BOTH the draft and the reference (.lit.fromFiles). Harvesting
+/ from both matters: a value only the reference names still gets rows, so
+/ a draft that drops that filter is compared on data where it shows. The
+/ two .lit.* settings below keep the literal rows inside this file's 2h
+/ span, so they carry the same bucket density as the default rows.
+
+NLIT0:1000;
+.lit.T0:0D09:00;
+.lit.SPAN:0D02:00;
 
 NROWS0:1000;
 typeGen:()!();

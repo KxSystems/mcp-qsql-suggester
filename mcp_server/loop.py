@@ -113,6 +113,14 @@ SC_TEMPERATURE: float = _load_temperature()
 # for debugging/latency tradeoffs, not recommended for production.
 _SC_SEEDS_ENV = "MCP_QSQL_SC_SEEDS"
 _SC_NROWS_ENV = "MCP_QSQL_SC_NROWS"
+_SC_LITERAL_ROWS_ENV = "MCP_QSQL_SC_LITERAL_ROWS"
+# Rows drawn from the candidates' harvested literals, appended per seed per
+# dummy table (mcp_server/literal_pool.q). 100 on top of the default 20 puts
+# a few rows on a conjunction of three harvested values (date AND sym AND
+# exchange) per seed, which a single 20-row draw cannot; 0 turns the
+# literal rows off (tables are then exactly genTable0's — the pre-fix
+# behaviour, kept as the switch for measuring what literal rows buy).
+_DEFAULT_LITERAL_ROWS = 100
 
 
 def _load_seeds() -> tuple[int, ...]:
@@ -149,8 +157,26 @@ def _load_nrows() -> int:
         return qexec.DEFAULT_NROWS
 
 
+def _load_literal_rows() -> int:
+    raw = os.environ.get(_SC_LITERAL_ROWS_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_LITERAL_ROWS
+    try:
+        n = int(raw)
+        if n < 0:
+            raise ValueError("must be non-negative")
+        return n
+    except ValueError as e:
+        log.warning(
+            "%s=%r invalid (%s) — falling back to default %r",
+            _SC_LITERAL_ROWS_ENV, raw, e, _DEFAULT_LITERAL_ROWS,
+        )
+        return _DEFAULT_LITERAL_ROWS
+
+
 SC_SEEDS: tuple[int, ...] = _load_seeds()
 SC_NROWS: int = _load_nrows()
+SC_LITERAL_ROWS: int = _load_literal_rows()
 
 
 # Optional out-of-band channel for ``expected_result_schema``. When the caller
@@ -244,6 +270,9 @@ def _candidate_summary(c: Candidate, state: ClusterState, cluster_roots: dict[in
         "exec_passed": uniq.valid,
         "exec_err": uniq.exec_err,
         "degenerate": uniq.degenerate_desc,
+        # Result empty / all-null on every seed: valid, but never counted as
+        # agreeing with anything (see `mcp_server.self_consistency`).
+        "vacuous": uniq.vacuous,
         # dedup_group_id: candidates sharing this id have byte-identical
         # extracted code (pre-execution dedup, an efficiency detail).
         # cluster_id: candidates sharing this id executed to equal results
@@ -327,6 +356,8 @@ async def _single_shot_no_exec(
         "winning_cluster_fraction": 1.0 if passed else 0.0,
         "n_clusters": 1 if passed else 0,
         "tie_occurred": False,
+        "winning_result_vacuous": False,
+        "literals_harvested": 0,
         "final_issues": final_issues,
         "candidates": [{
             "index": 0,
@@ -339,6 +370,7 @@ async def _single_shot_no_exec(
             "exec_passed": True,
             "exec_err": None,
             "degenerate": None,
+            "vacuous": False,
             "dedup_group_id": 0,
             "cluster_id": 0 if passed else None,
             "exec_skipped_reason": skip_reason,
@@ -445,6 +477,7 @@ async def _run_self_consistency(
         seeds=SC_SEEDS,
         nrows=SC_NROWS,
         timeout_s=qexec.DEFAULT_TIMEOUT_S,
+        literal_rows=SC_LITERAL_ROWS,
     )
     before_globals = await _run_pykx(qexec.snapshot_globals)
 
@@ -461,7 +494,7 @@ async def _run_self_consistency(
 
             winning = state.winning_cluster()
             is_last = round_idx == len(round_caps) - 1
-            if state.meets_threshold(cap, winning.weight, is_last):
+            if state.meets_threshold(cap, winning.weight, is_last, winning.vacuous):
                 break
 
         cluster_roots = state.cluster_roots()
@@ -498,6 +531,11 @@ async def _run_self_consistency(
             ),
             "n_clusters": winning.n_clusters if winning else 0,
             "tie_occurred": winning.tie_occurred if winning else False,
+            # The returned code's result was empty / all-null on every seed:
+            # it ran, but nothing about it was tested against data, and its
+            # cluster weight is agreement on code text alone.
+            "winning_result_vacuous": bool(winning and winning.members and winning.vacuous),
+            "literals_harvested": state.n_literals,
             "candidates": [_candidate_summary(c, state, cluster_roots) for c in state.candidates],
         })
         return result

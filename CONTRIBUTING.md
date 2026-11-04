@@ -35,7 +35,7 @@ Issues are welcome. The more of this you can include, the faster it goes:
 - The `generate_qsql` arguments, especially `table_schemas`.
 - The full response, not just the code — `passed`, the cluster sizes and
   `final_issues` are usually where the answer is.
-- Versions: q (`q --version`), pykx, vLLM, and whether `qlint.q_` is loaded
+- Versions: q (`echo 'show (.z.K;.z.k); exit 0;' | q -q`), pykx, vLLM, and whether `qlint.q_` is loaded
   (responses say `lint_gate: "disabled"` when it is not).
 
 ### Things that are already answered

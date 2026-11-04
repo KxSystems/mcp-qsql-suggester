@@ -159,6 +159,7 @@ python3 "$F" <<'__QSQL_FORMAT_END__'
   "rounds_used": 1,
   "candidates_generated": 4,
   "winning_cluster_size": 4,
+  "winning_result_vacuous": false,
   "lint_gate": "kx_qlint_c9",
 
   "reference_priority": null,
@@ -178,6 +179,11 @@ __QSQL_FORMAT_END__
 ```
 
 The stdout IS the response — relay it verbatim to the user.
+
+Copy `winning_result_vacuous` from the MCP return verbatim. When it is `true`
+the draft returned an empty result on every dummy dataset the server tried, so
+its cluster agreement was never tested against data — the formatter says so in
+the verdict, and that sentence is the only warning quick mode gives.
 
 Free-text slots that you author: `instruction_interpreted`. The `idiom_note`
 line shown above is the fixed quick-mode disclaimer — use it verbatim.

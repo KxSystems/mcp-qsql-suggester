@@ -184,7 +184,7 @@ def render_d(**overrides) -> str:
     return verdict_of(payload)
 
 
-@pytest.mark.parametrize("reason", ["quick_mode", "no_q"])
+@pytest.mark.parametrize("reason", ["quick_mode", "no_q", "vacuous_verify"])
 def test_unavailable_replaces_the_reason_list_entirely(reason):
     """A verdict that did not verify may not list reasons it never checked.
 
@@ -201,7 +201,7 @@ def test_unavailable_replaces_the_reason_list_entirely(reason):
 
 @pytest.mark.parametrize(
     "reason,expected",
-    [("quick_mode", "quick mode"), ("no_q", "PATH")],
+    [("quick_mode", "quick mode"), ("no_q", "PATH"), ("vacuous_verify", "empty result")],
 )
 def test_unavailable_names_which_reason_it_was(reason, expected):
     """The two reasons ask different things of the reader, so they must differ.
@@ -303,3 +303,36 @@ def test_unknown_reason_is_a_hard_error():
     proc = run(payload)
     assert proc.returncode == 2, proc.stdout
     assert "must be one of" in proc.stderr
+
+
+# --------------------------------------------------------------------------- #
+# vacuous agreement: an empty result agreed on is not agreement on data
+# --------------------------------------------------------------------------- #
+
+VACUOUS_CLAIM = "never tested against data"
+
+
+@pytest.mark.parametrize("reason", [None, "quick_mode", "no_q"])
+def test_vacuous_winner_is_disclosed_whatever_else_the_verdict_says(reason):
+    """`winning_result_vacuous` means the draft returned nothing on every
+    dummy dataset, so "4/4 candidates agreed" is agreement on code text. The
+    verdict must say so in every case-A form, including quick mode, which
+    renders case A unconditionally."""
+    extra = {} if reason is None else {"verification_unavailable": reason}
+    verdict = render(winning_result_vacuous=True, **extra)
+    assert VACUOUS_CLAIM in verdict, verdict
+
+
+@pytest.mark.parametrize("value", [False, None])
+def test_vacuous_note_only_when_the_server_said_so(value):
+    payload = {} if value is None else {"winning_result_vacuous": value}
+    assert VACUOUS_CLAIM not in render(**payload)
+
+
+def test_case_d_vacuous_verify_does_not_blame_the_instruction():
+    """A rewrite that could not be tested because its result was empty is
+    not "the instruction is ambiguous"."""
+    verdict = render_d(verification_unavailable="vacuous_verify")
+    assert AMBIGUITY_CLAIM not in verdict, verdict
+    assert "empty result" in verdict, verdict
+

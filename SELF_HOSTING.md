@@ -82,7 +82,7 @@ transformers, which will fight with pykx and `mcp` if installed together.
 
 | Item | Where to get it | Notes |
 |---|---|---|
-| **q/kdb+** | KX, under your q licence | Must be on `PATH` — `q --version` should work. |
+| **q/kdb+** | KX, under your q licence | Must be on `PATH` — `echo '-1 "q ok"; exit 0;' \| q -q` should print `q ok` (q has no `--version` flag; that opens a REPL and waits). |
 | **pykx** | `pip install -r requirements-server.txt`, which pins it; the licence is separate | Embedded q via `libq`. Deliberately **not** declared in this repo's `pyproject.toml`, so `pip install -e .` alone will not bring it in. Do not `pip install pykx` by hand first — the pinned install would then silently change the version you just chose. |
 | **A kdb+ licence** | KX | Needed for pykx to run embedded q. Either a kdb+ 4.x or a KDB-X licence (including KDB-X Community) works with the pinned pykx 4.x; pykx 3.x accepts only the former. See "pykx says Unlicensed" in Troubleshooting — a headless host needs `$QLIC/kc.lic` on disk, not an env var. |
 | **KX `qlint.q_`** | *Optional, but recommended.* Part of KX's AxLibraries, inside the KX Developer download ([code.kx.com/developer](https://code.kx.com/developer/), EULA-gated) | Powers the C9 lint gate. KX Analyst ships the same AxLibraries, but Developer is the smaller download and is sufficient. Install steps in [`README.md`](README.md) § Prerequisites; KX's own reference is [code.kx.com/analyst/libraries#download](https://code.kx.com/analyst/libraries/#download). Without it the server still runs with a two-gate stack — optional to keep a first run cheap, not because C9 is a formality; see [`mcp_server/README.md`](mcp_server/README.md) gate 2. |
@@ -486,6 +486,7 @@ Full table with defaults: [`mcp_server/README.md`](mcp_server/README.md)
 | `MCP_QSQL_SC_ROUND_CAPS` | Cheaper calls: `4,8` skips the 16-candidate round. Restricted to validated presets. |
 | `MCP_QSQL_SC_TEMPERATURE` | Sampling temperature for candidates (default `0.8`); also overridable per call. |
 | `MCP_QSQL_SC_SEEDS` / `MCP_QSQL_SC_NROWS` | Dummy-table shape for the execution gate. Fewer seeds is faster but weakens the cross-seed agreement guarantee — see `mcp_server/README.md` § "Tuning self-consistency execution". |
+| `MCP_QSQL_SC_LITERAL_ROWS` | Extra dummy rows (default `100`) drawn from the dates / syms the candidates' own code filters on, so a filter on a value the fixed pools lack is not empty for every candidate. Leave it on; `0` restores the old tables and is only for measuring what it buys — see `mcp_server/README.md` gate 3, "Literal rows". |
 
 Leave `MCP_QSQL_RETRIEVE_EXPECTED_SCHEMA` unset on any HTTP server more than
 one client talks to; it is a per-session stdio feature and under HTTP it would

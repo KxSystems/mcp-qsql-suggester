@@ -119,6 +119,44 @@ gated in order:
    because an earlier one defined a helper it uses, or agree with one only
    because that one had filtered the shared table.
 
+   **Literal rows.** The type generators draw from fixed pools — dates in
+   2024, ten equity syms — so a filter on a value outside them (a 2030 date,
+   `` `BTCUSD ``, an exchange code like `` `XQQ ``) matches no row on any seed.
+   Every candidate then returns an empty table, empty compares equal to
+   empty, and the call used to report a unanimous `passed=true` on code that
+   nothing had tested — with `pick_shortest` then favouring whichever
+   candidate had dropped a step. No fixed pool can be wide enough, because a
+   task can always name a value outside it. So before executing, the
+   constants in every parsed candidate's code are harvested from its parse
+   tree (`.lit.harvest` in `mcp_server/literal_pool.q`; clock-relative and
+   derived values such as `.z.d-1` or `"D"$"2030.01.15"` are
+   constant-folded, through a whitelist of pure primitives only), and
+   `MCP_QSQL_SC_LITERAL_ROWS` rows drawn from them are appended to each
+   seed's tables, alongside the default rows so that `=` still excludes
+   something. A literal row's date and timestamp columns derive from one
+   anchor, so `date=X` and `time.date=X` select the same rows; each
+   harvested date also contributes its neighbours, so `within` / `>` / `<`
+   have rows on both sides. The harvest is the union over **all** rounds:
+   when a later round adds a value, the tables change, and every earlier
+   candidate is re-executed on them before re-clustering. Code with no
+   harvestable constant sees exactly the old tables. The instruction text is
+   deliberately not harvested — if a value matters to a filter, it is in
+   some candidate's code by construction.
+
+   **Vacuous results never agree.** Literal rows are best-effort — a value
+   computed from the data, or a join whose dummy keys do not line up, stays
+   out of reach — so there is a second, unconditional rule: a result that is
+   empty or all-null on **every** seed (`.eval.isVacuous`) stays valid, but
+   never joins another candidate's cluster. Byte-identical completions still
+   share one weight, since that is agreement on the code itself. A vacuous
+   winner never finalizes a round early, and the response says so in
+   `winning_result_vacuous`. This rule guarantees honesty, not correctness:
+   it stops agreement on nothing from reading as agreement, and leaves a
+   lower `winning_cluster_fraction` for the caller to act on.
+   What neither rule catches: results that are non-empty but do not
+   discriminate — one row per (sym, 5-minute bucket), where `avg` and `wavg`
+   coincide — or a scalar `0` from `sum` over an empty selection.
+
 Candidates that parse+lint+execute cleanly (non-degenerate, on **every**
 seed tested) are clustered by cross-seed output equivalence
 (`.eval.cmp`, `mcp_server/eval_compare.q`) — two candidates only join a
@@ -165,6 +203,8 @@ whether to trust the answer.
 | `winning_cluster_fraction` | float | `winning_cluster_size / candidates_generated`. `1.0` means unanimous. |
 | `n_clusters` | int | Distinct execution-equivalence clusters among the valid candidates. High with a low fraction = the model is guessing. |
 | `tie_occurred` | bool | Two or more clusters shared the top weight. The winner was then chosen by tie-break, so agreement is weaker than the fraction alone suggests. |
+| `winning_result_vacuous` | bool | `q_code`'s result was empty or all-null on every seed, even with literal rows. It ran, but nothing about it was tested against data, and its weight is agreement on code text alone. Always `false` in the degraded no-execution path. |
+| `literals_harvested` | int | Distinct constants harvested from the candidates' code and fed into the dummy tables. `0` with `MCP_QSQL_SC_LITERAL_ROWS=0` or in the degraded path. |
 | `winning_candidate_index` | int \| None | Index into `candidates` of the returned representative. `None` when `passed=false`. |
 | `winning_cluster_id` | int \| None | The winning cluster's id, matching `candidates[].cluster_id`. **Absent entirely** in the degraded no-execution path (see below) — use `.get()`. |
 | `expected_result_schema_used` | str \| None | The shape actually forwarded to qwen, whether it came from the tool argument or from the deployer's out-of-band channel. `None` if no shape was used. |
@@ -181,6 +221,7 @@ Each entry in `candidates`:
 | `lint_issues` | Gate 2. Populated even when `parse_ok=false` — C9's message is often the usable half of a parse failure. |
 | `exec_ran` / `exec_passed` / `exec_err` | Gate 3. `exec_ran=false` means execution was never attempted (this candidate deduped onto another, or execution is off), so `exec_passed` says nothing — check `exec_ran` first. |
 | `degenerate` | Non-None if the result was a bare function or an unexpected atom (`.eval.descVal`); such a candidate is excluded from clustering even though it did not raise. |
+| `vacuous` | The result was empty or all-null on every seed (`.eval.isVacuous`). Still valid, but its `cluster_id` is its own: it never counts as agreeing with another candidate. |
 | `dedup_group_id` | Byte-identical extracted code. An efficiency detail. |
 | `cluster_id` | Executed to equal results on **every** seed tested — the semantically meaningful grouping, and the one that answers "does this candidate agree with `q_code`". `None` if the candidate never executed or was invalid. Two different `dedup_group_id`s can share one `cluster_id` (a comment or a renamed local changes the text but not the result). |
 | `exec_skipped_reason` | Present only in the no-execution path below. |
@@ -197,9 +238,10 @@ execution and no agreement, so the two strongest gates did not run.
 ## Files
 
 - `server.py` — entrypoint; registers the FastMCP tool and runs the transport chosen by `--transport` (`stdio` is the argparse default; a deployment passes `streamable-http`). Preloads qlint + typeGen + eval_compare on startup.
-- `loop.py` — async `run_generate_loop()`; orchestrates qwen (via `n=` multi-sample requests) → self-consistency clustering (`self_consistency.py`) → winner selection. Serializes pykx calls via an asyncio lock + single-worker thread executor. Also owns the `MCP_QSQL_SC_ROUND_CAPS` / `MCP_QSQL_SC_TEMPERATURE` / `MCP_QSQL_SC_SEEDS` / `MCP_QSQL_SC_NROWS` startup config and the `MCP_RUNTIME_EXEC=0` / preflight-failure short-circuit.
-- `self_consistency.py` — the clustering engine: dedupes candidate texts, executes new ones across all seeds, unions execution-equivalent candidates (`.eval.cmp`), tracks the winning cluster + round thresholds (`ROUND_MIN_WEIGHT`), picks the shortest-code representative.
-- `qexec.py` — execution primitives used by `self_consistency.py`: dummy-table build/drop per seed, candidate exec+capture with error/timeout trapping, degenerate-result detection (`.eval.descVal`), cross-candidate equality (`.eval.cmp`), and root-namespace leaked-global cleanup (candidate code routinely assigns intermediate helpers that would otherwise accumulate across the server's lifetime).
+- `loop.py` — async `run_generate_loop()`; orchestrates qwen (via `n=` multi-sample requests) → self-consistency clustering (`self_consistency.py`) → winner selection. Serializes pykx calls via an asyncio lock + single-worker thread executor. Also owns the `MCP_QSQL_SC_ROUND_CAPS` / `MCP_QSQL_SC_TEMPERATURE` / `MCP_QSQL_SC_SEEDS` / `MCP_QSQL_SC_NROWS` / `MCP_QSQL_SC_LITERAL_ROWS` startup config and the `MCP_RUNTIME_EXEC=0` / preflight-failure short-circuit.
+- `self_consistency.py` — the clustering engine: dedupes candidate texts, harvests their literals (re-executing earlier rounds when the union grows), executes new ones across all seeds, unions execution-equivalent non-vacuous candidates (`.eval.cmp`), tracks the winning cluster + round thresholds (`ROUND_MIN_WEIGHT`), picks the shortest-code representative.
+- `literal_pool.q` — literal-aware dummy rows: harvests constants from a candidate's parse tree (`.lit.harvest`), turns them into per-type pools (`.lit.pools`) and appends rows drawn from them (`genTableLit`). Loaded after `type_gen.q`. **Byte-identical** to `.claude/skills/qsql-coder/literal_pool.q` (enforced by `tests/test_literal_pool_copies.py`) — unlike `eval_compare.q`, both copies answer the same question.
+- `qexec.py` — execution primitives used by `self_consistency.py`: dummy-table build/drop per seed (with literal rows), literal harvest, candidate exec+capture with error/timeout trapping, degenerate- and vacuous-result detection (`.eval.descVal`, `.eval.isVacuous`), cross-candidate equality (`.eval.cmp`), and root-namespace leaked-global cleanup (candidate code routinely assigns intermediate helpers that would otherwise accumulate across the server's lifetime).
 - `eval_compare.q` — mcp_server's own copy of `.eval.cmp` / `.eval.eqEps` / `.eval.descVal` / `.eval.fmtCols`. Deliberately NOT loaded from `.claude/skills/qsql-coder/eval_compare.q`, for two independent reasons. Packaging: mcp_server is meant to be deployable standalone (see Prerequisites in the repo's `CLAUDE.md`), so it carries its own copy rather than depending on `.claude/skills/` being present. Semantics: since 2026-09-08 the two are **not** the same function — the skill copy normalizes temporal resolution (a `u` minute-of-day bucket equals the `p` timestamp bucket covering that minute) and this one does not. Do not "re-sync" them; the file headers carry the argument.
 - `vllm_client.py` — module-level `httpx.AsyncClient` wrapping vLLM `/v1/chat/completions`. Disables Qwen3.5 thinking template explicitly; `chat(..., n=...)` returns all `n` completions from a single request (cheaper than `n` separate calls — the prompt is only prefilled once). `MCP_QSQL_SPLIT_REQUESTS=1` swaps that for `n` separate `n=1` requests, for gateways that refuse `n>1` — sequential by default, up to `MCP_QSQL_SPLIT_CONCURRENCY` in flight otherwise. An endpoint that silently ignores `n` (e.g. `mlx_lm.server`, which returns one choice) is detected on the first short response: that call is topped up with `n=1` requests, a warning is logged once, and the rest of the process runs as if the variable were `1`.
 - `smoke_test.py` — loop-only regression check (no MCP protocol). Covers happy-path, schema-aware lint, runtime-exec-catches-bug (every candidate invalid), exhaustion (every candidate unparseable), clustering-picks-majority (3-vs-1 split), and the `MCP_RUNTIME_EXEC=0` short-circuit.
@@ -366,6 +408,7 @@ back here, so add a new variable here first.
 | `MCP_QSQL_SC_TEMPERATURE` | no | `0.8` | Default sampling temperature for self-consistency candidates. Freely overridable per call via the tool's `temperature` arg (no ceiling — unlike round caps, temperature isn't a cost-scaling knob) |
 | `MCP_QSQL_SC_SEEDS` | no | `42,43,44` | Comma-separated dummy-table seeds for the runtime-exec gate + clustering. Fixed for the process/session lifetime — no per-call arg. A single seed (e.g. `42`) is supported for debugging/latency but weakens the cross-seed agreement guarantee (see "Tuning self-consistency execution" below) |
 | `MCP_QSQL_SC_NROWS` | no | `20` | Rows generated per seed per dummy table. Fixed for the process/session lifetime — no per-call arg |
+| `MCP_QSQL_SC_LITERAL_ROWS` | no | `100` | Extra rows per seed per dummy table, drawn from the constants harvested from the candidates' code (see gate 3, "Literal rows"), so a filter on a value the fixed pools lack selects rows instead of none. Added only when something was harvested. `0` = off (tables exactly as before — the switch for measuring what literal rows buy). Fixed for the process/session lifetime |
 | `MCP_RUNTIME_EXEC` | no | `1` | Set `0` to skip execution entirely (debug only) — self-consistency clustering is impossible without execution, so this short-circuits the whole call to a single parse+lint-only candidate rather than wasting the round-cap generation budget |
 | `MCP_QSQL_RETRIEVE_EXPECTED_SCHEMA` | no | unset | Set to `1` to gate the env-var shape-injection fallback on. Only meaningful under `stdio`, where each session gets a fresh server subprocess carrying the driver's env; leave it unset on a long-running HTTP server, whose env is frozen at startup and shared by every concurrent client (`../CLAUDE.md` § "RETRIEVE_EXPECTED_SCHEMA flag") |
 | `MCP_QSQL_INJECT_EXPECTED_SCHEMA` | no | unset | The out-of-band shape hint itself, read on each request when the gate above is `1`. Ignored otherwise |
@@ -382,8 +425,11 @@ a high-risk named idiom (`wavg`, `mavg`, `fby`, `xexp`, etc. — easy to
 over-apply), (b) the functional form `![...]` / `?[...]` is used,
 (c) `winning_cluster_fraction < 0.6` or `tie_occurred=true` (candidates split
 — qwen was uncertain; the tie clause is redundant above `0.5` and kept
-deliberately, see the SKILL.md note), or (d) the user supplied a q snippet or
-formula to check against. Execution + clustering covers "does it
+deliberately, see the SKILL.md note), (d) `winning_result_vacuous=true`
+(the draft's result was empty on every dummy dataset, so nothing about it met
+data), or (e) the user supplied a q snippet or formula to check against.
+Bash-verify builds its own dummy with literal rows harvested from **both** the
+draft and the reference, so a value only the reference names still gets rows. Execution + clustering covers "does it
 run, and do independent samples agree"; the skill's Bash-verify covers
 "does it match the intended answer" (catches the semantic-misapplication
 class that agreement alone cannot detect without a reference). On

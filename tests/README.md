@@ -174,14 +174,21 @@ It also covers `.eval.wrapInfo` (why B-wrap prints `meta` rather than
 said nothing about a differing *key*) and the numeric guard-order fix that
 shipped with it.
 
+`test_literal_pool_copies.py` — **tier 1** — the two `literal_pool.q` copies
+(`mcp_server/` for gate 3, the skill's for Bash-verify) are byte-identical, and
+`.eval.isVacuous` is defined identically in the server's `eval_compare.q` and
+the skill's `eval_describe.q`. The opposite of the `eval_compare.q` rule: those
+two copies answer different questions and must differ, these answer the same
+one and must not.
+
 These tests reach `ClusterState`'s pure methods by populating `.uniques`
 and `._equal` directly, skipping `add_round` (which parses, lints, and
 executes through pykx). See `_state()` in `test_self_consistency.py`.
 
 ## What tiers 2 and 3 cover
 
-Two files for tier 2 (`test_eval_compare_skill.py` is the second, described
-above under what it forks and why), one for tier 3, sharing their fixtures via
+Three files for tier 2 (`test_eval_compare_skill.py` is described above under
+what it forks and why; `test_vacuous_filter.py` below), one for tier 3, sharing their fixtures via
 `conftest.py` — which is where `run_async`, `fake_chat`, `generate` and
 `lint_gate_disabled` live. Everything pykx-dependent is imported *inside* those
 fixtures, so `conftest.py` (loaded on every run, including tier-1-only ones)
@@ -204,6 +211,24 @@ signal either: a dict of a table (`exec ... by sym`) must be described as a
 dict, not a keyed table, and `.eval.cmp` must answer keyed table vs dict vs
 dict of a table with a boolean — tolerating float drift inside a dict as it does
 inside a table — rather than signal into `results_equal`'s safety net.
+
+**Tier 2** — `test_vacuous_filter.py` (26 tests) — filters on values the
+default dummy pools lack (a 2030 date, `` `ZZZ ``, `.z.d-1`, a `within` range, a
+`like` pattern, a three-way conjunction). With literal rows, two semantically
+different candidates under such a filter must split; with literal rows off, the
+same pair must still not cluster (the vacuous rule) and the response must say
+`winning_result_vacuous`; and a companion test pins the premise — on the default
+pools their results really are empty and `.eval.cmp`-equal, exactly what the
+pre-fix server read as agreement. Also: `date` vs `time.date` filters still
+agree (one anchor per literal row); an as-of join on an out-of-pool sym and
+date finds prevailing quotes, so `sum bid` vs `sum ask` split instead of both
+being `sum` over nulls = 0 — a non-null scalar the vacuous rule cannot see;
+`where 0b` is never a confident pass and a
+vacuous 4/4 does not finalize round 1; a literal first seen in round 2 makes
+round 1 re-execute on the new tables; code with no literal sees byte-identical
+tables; and constant folding never runs `system` / `value`, nor a fold large
+enough to exhaust memory. Each of those last claims was checked to fail with
+its guard removed.
 
 **Tier 3** — `test_pipeline_gates_qlint.py` (6 tests) — the claims that need a real linter: that a response
 reports `lint_gate: "kx_qlint_c9"` when C9 genuinely ran, that a parse failure

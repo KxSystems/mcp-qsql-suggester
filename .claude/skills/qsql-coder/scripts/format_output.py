@@ -69,6 +69,10 @@ REFERENCE_PRIORITY_HEADERS = {
 VERIFICATION_UNAVAILABLE = {
     "quick_mode": "quick mode does not verify against a reference",
     "no_q": "`q` is not on PATH, so Bash-verify could not run",
+    "vacuous_verify": (
+        "Bash-verify ran, but both the draft and the reference returned an "
+        "empty result on the verify data, so the comparison tested nothing"
+    ),
 }
 
 # Case D's whole sentence, per reason, rather than one skeleton with the reason
@@ -88,7 +92,23 @@ UNAVAILABLE_CASE_D = {
         "Bash-verify one, and this skill does not present q it has not "
         "verified. Make `q` reachable and re-run for a verified alternative."
     ),
+    "vacuous_verify": (
+        "I did not present an alternative — the one I wrote returned an empty "
+        "result on the verify data, so Bash-verify could not test it, and this "
+        "skill does not present q it has not verified. A worked example, or "
+        "the values the filter should match, would let me build data that "
+        "exercises it."
+    ),
 }
+
+# Appended to case A when the MCP's winning draft returned an empty / all-null
+# result on every dummy dataset. Its cluster numbers then count agreement on
+# code text only -- nothing about the draft met data -- and a verdict reading
+# "4/4 candidates agreed ... unanimous" would say otherwise.
+VACUOUS_WINNER_NOTE = (
+    " The draft returned an empty result on every dummy dataset the server "
+    "tried, so that agreement was never tested against data."
+)
 
 
 def die(msg: str) -> None:
@@ -226,6 +246,8 @@ def render_case_a(payload: dict) -> list[str]:
             f" The winning cluster was a plurality rather than unanimous "
             f"({win} of {n})."
         )
+    if payload.get("winning_result_vacuous") is True:
+        tail += VACUOUS_WINNER_NOTE
     if unavailable:
         # No reason list: the draft was not held up against a reference, so
         # none of "no high-risk idiom, no functional form, ..." was ever
