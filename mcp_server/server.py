@@ -67,11 +67,14 @@ TOOL_DESCRIPTION = (
     "commands (`\\d`, `\\p`, `\\t`), or any non-q/kdb+ task.\n\n"
     "Pass `table_schemas` as {name: \"`col1`col2!`t1`t2\"} — the model was "
     "trained on that exact shape.\n\n"
-    "Optional `expected_result_schema` (string) — when supplied, appended "
-    "to qwen's user prompt as `Expected result schema: ...`. Set by "
-    "the /qsql-coder skill when the user supplied a q reference it can "
-    "derive the shape from; caller derives the shape externally and "
-    "passes the resulting string in.\n\n"
+    "Optional `expected_result_schema` (string) — the shape of the answer, "
+    "for when the caller knows the result's columns in advance. Appended "
+    "to qwen's user prompt as `Expected result schema: ...`. Use the "
+    "notation the model card's evaluation used, with q type characters: "
+    "`table: time(p), sym(s), price(f)` for an unkeyed table, "
+    "`keyed table. keys: sym. cols: vwap(f)` for a keyed one, "
+    "`scalar -9` / `list type 9` (q type number) for an atom / list. "
+    "Omit it when the shape is not known; do not guess one.\n\n"
     "Set `include_candidates=False` to omit the per-candidate `candidates` "
     "list from the response and save tokens on the calling side — every "
     "field needed to decide whether to trust the answer (`q_code`, "
@@ -118,9 +121,12 @@ async def generate_qsql(
     allows.
 
     ``expected_result_schema`` is optional. When non-None, it is appended
-    to qwen's user prompt as ``Expected result schema: <string>``. Set by
-    /qsql-coder when the user supplied a q reference to derive the shape
-    from (that skill calls such a reference "priority-1").
+    to qwen's user prompt as ``Expected result schema: <string>``. The
+    string uses ``.eval.descVal``'s notation (e.g. ``keyed table. keys:
+    sym. cols: vwap(f)``) — the form the evaluation harness feeds the
+    model; the line was never in the training data. Any caller that knows
+    the result's columns in advance may pass it. The /qsql-coder skill
+    sets it only in its developer-only pre-derive mode (``pre-derive.md``).
 
     When it is None, ``mcp_server.loop`` may fall back to the
     ``MCP_QSQL_INJECT_EXPECTED_SCHEMA`` env var — but ONLY if the server was
