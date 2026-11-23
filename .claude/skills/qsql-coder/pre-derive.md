@@ -67,8 +67,9 @@ Run the priority-1 reference on a dummy table to derive the output shape,
 then pass the shape string to the MCP `generate_qsql` tool as the
 `expected_result_schema` argument. This appends an
 `Expected result schema: ...` line to qwen's user prompt — the same
-hint format used during training/evaluation when canonical responses
-are pre-passed for shape derivation. With the hint, the MCP path's
+hint format the evaluation harness uses when canonical responses
+are pre-passed for shape derivation. The hint was never in the
+training data: the model meets this line only at evaluation time. With the hint, the MCP path's
 round-1 prompt matches that format; remaining behavioral difference
 is the self-consistency clustering across rounds, which is what the
 A/B experiment is designed to isolate.
@@ -160,9 +161,9 @@ type chars only (driven by `meta`), so the shape strings are
 data-independent — the seed/nrows alignment is paranoia for future
 drift, not strict necessity. **Why two**: `descVal` (defined in
 `.claude/skills/qsql-coder/eval_describe.q`, also concat-loaded by
-SKILL.md's Bash-verify) mirrors the format the model was trained
-against, so qwen sees a consistent hint string in MCP pre-derive
-mode. `descSchema` uses the same q-schema notation as the input
+SKILL.md's Bash-verify) mirrors the format the evaluation harness
+feeds the model, so qwen sees the same hint string in MCP pre-derive
+mode as in the harness. `descSchema` uses the same q-schema notation as the input
 `table_schemas` entries (`` `col!`type ``), purely for the
 formatter's dev-only audit-trail display — never enters qwen's
 prompt, so it doesn't perturb the A/B test. `descSchema` is defined

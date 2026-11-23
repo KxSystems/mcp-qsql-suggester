@@ -696,7 +696,8 @@ drift bug we just fixed.
   `${CLAUDE_SKILL_DIR}/pre-derive.md`, the file sitting next to this
   `SKILL.md`, that injects an
   `Expected result schema:` hint into qwen's prompt, aligning the MCP
-  path with the prompt format used during model training/evaluation.
+  path with the prompt format used during model evaluation (the hint
+  was never in the training data).
   It is **not** auto-loaded and **not** part of the customer flow.
   Apply it only when the developer explicitly requests pre-derive
   mode (e.g. "use pre-derive mode" / "read pre-derive.md and follow
